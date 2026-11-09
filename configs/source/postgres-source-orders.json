@@ -1,0 +1,20 @@
+{
+    "name": "postgres-source-orders",
+    "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "debezium_replication",
+        "database.password": "${env:PG_PASSWORD}",
+        "database.dbname": "ProductionDB",
+        "plugin.name": "pgoutput",
+        "publication.name": "dbz_publication",
+        "slot.name": "debezium_pg_slot",
+        "topic.prefix": "pg-cdc",
+        "table.include.list": "public.orders,public.customers,public.products,public.transactions",
+        "tombstones.on.delete": "true",
+        "decimal.handling.mode": "double",
+        "publication.autocreate.mode": "disabled"
+    }
+}

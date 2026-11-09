@@ -1,0 +1,21 @@
+ARG DEBEZIUM_VERSION=3.6.3.Final
+FROM quay.io/debezium/connect:${DEBEZIUM_VERSION}
+ARG DEBEZIUM_VERSION
+
+# Debezium JDBC sink connector
+RUN curl -fsSL "https://repo1.maven.org/maven2/io/debezium/debezium-connector-jdbc/${DEBEZIUM_VERSION}/debezium-connector-jdbc-${DEBEZIUM_VERSION}-plugin.tar.gz" \
+  | tar -xz -C /kafka/connect
+
+# Debezium scripting (Filter SMT)
+RUN mkdir /tmp/scripting \
+ && curl -fsSL "https://repo1.maven.org/maven2/io/debezium/debezium-scripting/${DEBEZIUM_VERSION}/debezium-scripting-${DEBEZIUM_VERSION}.tar.gz" \
+    | tar -xz -C /tmp/scripting \
+ && find /tmp/scripting -name '*.jar' -exec cp {} /kafka/connect/debezium-connector-jdbc/ \; \
+ && rm -rf /tmp/scripting
+
+# Groovy JSR 223 engine for the Filter SMT
+ARG GROOVY_VERSION=4.0.27
+RUN for m in groovy groovy-jsr223 groovy-json; do \
+      curl -fsSL -o /kafka/connect/debezium-connector-jdbc/${m}-${GROOVY_VERSION}.jar \
+        https://repo1.maven.org/maven2/org/apache/groovy/${m}/${GROOVY_VERSION}/${m}-${GROOVY_VERSION}.jar ; \
+    done

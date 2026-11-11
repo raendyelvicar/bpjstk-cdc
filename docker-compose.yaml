@@ -1,4 +1,7 @@
 services:
+  # TODO(remote-kafka): remove this service (and the kafka-data volume) once the
+  # remote broker is in use. On the remote broker, KAFKA_ADVERTISED_LISTENERS must
+  # advertise a host:port this machine can reach - not localhost / kafka.
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
@@ -30,11 +33,18 @@ services:
     ports:
       - '8083:8083'
     environment:
+      # TODO(remote-kafka): remote broker address, e.g. 'kafka.kodehive.id:9092'.
+      # If it uses SASL/SSL add CONNECT_SECURITY_PROTOCOL, CONNECT_SASL_MECHANISM,
+      # CONNECT_SASL_JAAS_CONFIG and the same with CONNECT_PRODUCER_ / CONNECT_CONSUMER_
+      # prefixes (sources/sinks/DLQ use those clients, not the worker's own).
       BOOTSTRAP_SERVERS: 'kafka:29092'
+      # TODO(remote-kafka): use a unique group id and topic names if the cluster is
+      # shared, so this worker doesn't join or overwrite another Connect cluster.
       GROUP_ID: '1'
       CONFIG_STORAGE_TOPIC: 'connect-configs'
       OFFSET_STORAGE_TOPIC: 'connect-offsets'
       STATUS_STORAGE_TOPIC: 'connect-status'
+      # TODO(remote-kafka): raise to the cluster's replication factor (e.g. 3).
       CONFIG_STORAGE_REPLICATION_FACTOR: 1
       OFFSET_STORAGE_REPLICATION_FACTOR: 1
       STATUS_STORAGE_REPLICATION_FACTOR: 1
@@ -44,10 +54,40 @@ services:
       CONNECT_CONFIG_PROVIDERS_ENV_CLASS: 'org.apache.kafka.common.config.provider.EnvVarConfigProvider'
       MSSQL_PASSWORD: ${MSSQL_PASSWORD:?set MSSQL_PASSWORD in .env}
       PG_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+    # TODO(remote-kafka): drop 'kafka' here once the local broker is removed.
+    # TODO(verify): sqlserver/postgres are also remote now (*.kodehive.id), so these
+    # two dependencies - and the local sqlserver/postgres services - may be unneeded.
     depends_on:
       - kafka
       - sqlserver
       - postgres
+
+  # Loop filter between the CDC topics and the sinks (sql/ksqldb-01-loop-filter.sql,
+  # applied by scripts/register-ksqldb.sh). Queries live in the command topic, so
+  # they survive restarts and only need applying once.
+  ksqldb-server:
+    image: confluentinc/cp-ksqldb-server:7.5.0
+    container_name: ksqldb-server
+    ports:
+      - '8088:8088'
+    environment:
+      KSQL_LISTENERS: 'http://0.0.0.0:8088'
+      # TODO(remote-kafka): remote broker address (+ KSQL_SECURITY_PROTOCOL,
+      # KSQL_SASL_MECHANISM, KSQL_SASL_JAAS_CONFIG for SASL/SSL).
+      KSQL_BOOTSTRAP_SERVERS: 'kafka:29092'
+      # TODO(remote-kafka): keep unique on a shared cluster; it prefixes the
+      # command topic and the query consumer groups.
+      KSQL_KSQL_SERVICE_ID: 'bpjstk_loopfilter_'
+      # TODO(remote-kafka): raise to the cluster's replication factor (e.g. 3).
+      KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 1
+      KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
+      KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: 'true'
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: 'true'
+      KSQL_KSQL_STREAMS_AUTO_OFFSET_RESET: 'earliest'
+    # TODO(remote-kafka): drop this once the local broker is removed.
+    depends_on:
+      - kafka
 
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:latest
@@ -56,12 +96,16 @@ services:
       - '8080:8080'
     environment:
       KAFKA_CLUSTERS_0_NAME: 'local'
+      # TODO(remote-kafka): remote broker address (+ KAFKA_CLUSTERS_0_PROPERTIES_* for SASL/SSL).
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: 'kafka:29092'
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: 'debezium'
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: 'http://kafka-connect:8083'
+      KAFKA_CLUSTERS_0_KSQLDBSERVER: 'http://ksqldb-server:8088'
+    # TODO(remote-kafka): drop 'kafka' here once the local broker is removed.
     depends_on:
       - kafka
       - kafka-connect
+      - ksqldb-server
 
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2019-latest

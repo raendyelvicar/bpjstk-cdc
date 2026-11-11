@@ -1,0 +1,24 @@
+{
+    "name": "bpjstk-postgres-source",
+    "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "debezium_replication",
+        "database.password": "${env:PG_PASSWORD}",
+        "database.dbname": "bpjstk_poc",
+        "plugin.name": "pgoutput",
+        "publication.name": "dbz_publication",
+        "slot.name": "debezium_pg_slot",
+        "topic.prefix": "pg-bpjstk-cdc",
+        "table.include.list": "public.bpjs_claim,public.bpjs_membership,public.bpjs_monthly_contribution",
+        "tombstones.on.delete": "true",
+        "decimal.handling.mode": "double",
+        "publication.autocreate.mode": "disabled",
+        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "key.converter.schemas.enable": "true",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": "true"
+    }
+}

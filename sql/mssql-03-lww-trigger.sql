@@ -1,5 +1,11 @@
 USE bpjsk_poc;
 GO
+-- Triggers keep the QUOTED_IDENTIFIER/ANSI_NULLS in effect when created, and
+-- inserting into BPJSMonthlyContribution (persisted computed TotalAmount)
+-- needs both ON. sqlcmd defaults QUOTED_IDENTIFIER to OFF.
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
 -- Last-writer-wins for dbo.BPJSMembership, dbo.BPJSMonthlyContribution, dbo.BPJSClaim.
 -- An update applies only if it beats the current row on:
 --   1. newer COALESCE(updated_at, CreatedAt), then
@@ -188,11 +194,26 @@ BEGIN
             DBCC CHECKIDENT ('dbo.BPJSMonthlyContribution', RESEED, @ident) WITH NO_INFOMSGS;
     END;
 
+    -- Updates that win last-writer-wins, and whether they change the unique
+    -- period key (MembershipID, PeriodYear, PeriodMonth).
+    DECLARE @win TABLE (id INT PRIMARY KEY, uniq_changed BIT NOT NULL);
+    INSERT INTO @win (id, uniq_changed)
+    SELECT i.ContributionID,
+           CASE WHEN i.MembershipID <> d.MembershipID
+             OR i.PeriodYear <> d.PeriodYear
+             OR i.PeriodMonth <> d.PeriodMonth
+                THEN 1 ELSE 0 END
+    FROM inserted i
+    JOIN deleted  d ON d.ContributionID = i.ContributionID
+    WHERE COALESCE(CAST(i.updated_at AS DATETIME2(6)), CAST(i.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6))) > COALESCE(CAST(d.updated_at AS DATETIME2(6)), CAST(d.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6)))
+       OR (COALESCE(CAST(i.updated_at AS DATETIME2(6)), CAST(i.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6))) = COALESCE(CAST(d.updated_at AS DATETIME2(6)), CAST(d.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6)))
+           AND COALESCE(i.updated_by, i.created_by, -1) > COALESCE(d.updated_by, d.created_by, -1));
+
+    -- A set-based UPDATE that SETs a unique-index column runs as delete + insert,
+    -- CDC records it that way, and the delete then replicates as a real delete of
+    -- the row. So the common case leaves the period key columns out ...
     UPDATE t
-    SET MembershipID       = i.MembershipID,
-        PeriodMonth        = i.PeriodMonth,
-        PeriodYear         = i.PeriodYear,
-        BaseWage           = i.BaseWage,
+    SET BaseWage           = i.BaseWage,
         JHTEmployee        = i.JHTEmployee,
         JHTEmployer        = i.JHTEmployer,
         JKKEmployer        = i.JKKEmployer,
@@ -209,10 +230,42 @@ BEGIN
         deleted_at         = i.deleted_at
     FROM dbo.BPJSMonthlyContribution t
     JOIN inserted i ON i.ContributionID = t.ContributionID
-    JOIN deleted  d ON d.ContributionID = t.ContributionID
-    WHERE COALESCE(CAST(i.updated_at AS DATETIME2(6)), CAST(i.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6))) > COALESCE(CAST(d.updated_at AS DATETIME2(6)), CAST(d.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6)))
-       OR (COALESCE(CAST(i.updated_at AS DATETIME2(6)), CAST(i.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6))) = COALESCE(CAST(d.updated_at AS DATETIME2(6)), CAST(d.CreatedAt AS DATETIME2(6)), CAST('0001-01-01' AS DATETIME2(6)))
-           AND COALESCE(i.updated_by, i.created_by, -1) > COALESCE(d.updated_by, d.created_by, -1));
+    JOIN @win     w ON w.id = t.ContributionID AND w.uniq_changed = 0;
+
+    -- ... and a row that does change one is updated on its own key, which SQL Server
+    -- runs (and CDC records) as an update.
+    DECLARE @id INT;
+    DECLARE uniq_rows CURSOR LOCAL FAST_FORWARD FOR SELECT id FROM @win WHERE uniq_changed = 1;
+    OPEN uniq_rows;
+    FETCH NEXT FROM uniq_rows INTO @id;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        UPDATE t
+        SET MembershipID       = i.MembershipID,
+            PeriodMonth        = i.PeriodMonth,
+            PeriodYear         = i.PeriodYear,
+            BaseWage           = i.BaseWage,
+            JHTEmployee        = i.JHTEmployee,
+            JHTEmployer        = i.JHTEmployer,
+            JKKEmployer        = i.JKKEmployer,
+            JKMEmployer        = i.JKMEmployer,
+            JPEmployee         = i.JPEmployee,
+            JPEmployer         = i.JPEmployer,
+            PaymentStatus      = i.PaymentStatus,
+            PaidAt             = i.PaidAt,
+            CreatedAt          = i.CreatedAt,
+            created_by         = i.created_by,
+            updated_by         = i.updated_by,
+            updated_at         = i.updated_at,
+            deleted_by         = i.deleted_by,
+            deleted_at         = i.deleted_at
+        FROM dbo.BPJSMonthlyContribution t
+        JOIN inserted i ON i.ContributionID = t.ContributionID
+        WHERE t.ContributionID = @id;
+        FETCH NEXT FROM uniq_rows INTO @id;
+    END;
+    CLOSE uniq_rows;
+    DEALLOCATE uniq_rows;
 END;
 GO
 

@@ -21,7 +21,7 @@ else
   SQLCMD=(docker exec -i sqlserver "$(docker exec sqlserver sh -c 'ls /opt/mssql-tools18/bin/sqlcmd 2>/dev/null || ls /opt/mssql-tools/bin/sqlcmd')")
 fi
 run_mssql() {
-  "${SQLCMD[@]}" -S "$MSSQL_HOST,$MSSQL_PORT" -U sa -P "$MSSQL_PASSWORD" -C -b -i /dev/stdin < "$1"
+  "${SQLCMD[@]}" -S "$MSSQL_HOST,$MSSQL_PORT" -U sa -P "$MSSQL_PASSWORD" -C -I -b -i /dev/stdin < "$1"
 }
 
 # psql: use a local install, else the one in the local postgres container.
@@ -36,10 +36,12 @@ run_pg() {
 }
 
 echo "== SQL Server ($MSSQL_HOST:$MSSQL_PORT) =="
+run_mssql sql/mssql-01-schema.sql
 run_mssql sql/mssql-02-enable-cdc.sql
 run_mssql sql/mssql-03-lww-trigger.sql
 
 echo "== PostgreSQL ($PG_HOST:$PG_PORT/$PG_DB) =="
+run_pg sql/postgres-01-schema.sql
 run_pg sql/postgres-02-replication.sql -v pw="$PG_PASSWORD"
 run_pg sql/postgres-03-lww-trigger.sql
 

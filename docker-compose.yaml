@@ -77,7 +77,7 @@ services:
       KSQL_BOOTSTRAP_SERVERS: 'kafka:29092'
       # TODO(remote-kafka): keep unique on a shared cluster; it prefixes the
       # command topic and the query consumer groups.
-      KSQL_KSQL_SERVICE_ID: 'bpjstk_loopfilter_'
+      KSQL_KSQL_SERVICE_ID: 'bpjsk_loopfilter_'
       # TODO(remote-kafka): raise to the cluster's replication factor (e.g. 3).
       KSQL_KSQL_INTERNAL_TOPIC_REPLICAS: 1
       KSQL_KSQL_STREAMS_REPLICATION_FACTOR: 1
@@ -126,7 +126,7 @@ services:
     ports:
       - '5432:5432'
     environment:
-      POSTGRES_DB: 'ProductionDB'
+      POSTGRES_DB: 'bpjsk_poc'
       POSTGRES_USER: 'postgres'
       POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
     command:

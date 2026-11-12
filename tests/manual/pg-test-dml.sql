@@ -1,4 +1,4 @@
--- Manual replication test, PostgreSQL side (bpjstk_poc). Run one step at a time
+-- Manual replication test, PostgreSQL side (bpjsk_poc). Run one step at a time
 -- and check SQL Server (and the Kafka topics) before the next step.
 --
 -- Writer rules (see sql/postgres-03-lww-trigger.sql):

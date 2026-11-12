@@ -1,4 +1,4 @@
-USE BPJSTK_POC;
+USE bpjsk_poc;
 GO
 -- CDC capture and cleanup run as SQL Server Agent jobs. Without a running Agent
 -- the change tables never fill and the Debezium source sees no changes.
@@ -6,7 +6,7 @@ IF NOT EXISTS (SELECT 1 FROM sys.dm_server_services
                WHERE servicename LIKE 'SQL Server Agent%' AND status_desc = 'Running')
     RAISERROR('WARNING: SQL Server Agent is not running; CDC will not capture changes until it is started.', 10, 1) WITH NOWAIT;
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = 'BPJSTK_POC' AND is_cdc_enabled = 1)
+IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = 'bpjsk_poc' AND is_cdc_enabled = 1)
     EXEC sys.sp_cdc_enable_db;
 GO
 -- Capture all columns. TotalAmount is computed, so CDC reports it as NULL; the

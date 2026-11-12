@@ -1,4 +1,4 @@
-USE BPJSTK_POC;
+USE bpjsk_poc;
 GO
 -- Last-writer-wins for dbo.BPJSMembership, dbo.BPJSMonthlyContribution, dbo.BPJSClaim.
 -- An update applies only if it beats the current row on:

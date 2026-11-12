@@ -10,7 +10,7 @@ MSSQL_HOST=${MSSQL_HOST:-localhost}
 MSSQL_PORT=${MSSQL_PORT:-1433}
 PG_HOST=${PG_HOST:-localhost}
 PG_PORT=${PG_PORT:-5432}
-PG_DB=${PG_DB:-bpjstk_poc}
+PG_DB=${PG_DB:-bpjsk_poc}
 # Owner of the bpjs_* tables; needs to create roles, publications and slots.
 PG_ADMIN_USER=${PG_ADMIN_USER:-postgres}
 

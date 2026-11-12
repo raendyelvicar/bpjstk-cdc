@@ -43,19 +43,19 @@ PG_PASSWORD = os.environ["PG_PASSWORD"]
 # service names sqlserver/postgres, which only resolve inside the compose network.)
 MSSQL_HOST = os.getenv("MSSQL_HOST", "localhost")
 MSSQL_PORT = int(os.getenv("MSSQL_PORT", "1433"))
-MSSQL_DB = os.getenv("MSSQL_DB", "BPJSTK_POC")
+MSSQL_DB = os.getenv("MSSQL_DB", "bpjsk_poc")
 PG_HOST = os.getenv("PG_HOST", "localhost")
 PG_PORT = int(os.getenv("PG_PORT", "5432"))
-PG_DB = os.getenv("PG_DB", "bpjstk_poc")
+PG_DB = os.getenv("PG_DB", "bpjsk_poc")
 PG_USER = os.getenv("PG_USER", os.getenv("PG_ADMIN_USER", "postgres"))
 CONNECT_URL = os.getenv("CONNECT_URL", "http://localhost:8083")
 KSQLDB_URL = os.getenv("KSQLDB_URL", "http://localhost:8088")
 # TODO(remote-kafka): set KAFKA_BOOTSTRAP to the remote broker's externally advertised listener
 # (plus security_protocol/sasl_* kwargs on KafkaConsumer/KafkaProducer if it uses SASL/SSL).
 KAFKA = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
-DLQ_TOPIC = os.getenv("DLQ_TOPIC", "dlq.bpjstk-replication")
+DLQ_TOPIC = os.getenv("DLQ_TOPIC", "dlq.bpjsk-replication")
 
-CONNECTORS = ["bpjstk-mssql-source", "bpjstk-postgres-source", "bpjstk-postgres-sink", "bpjstk-mssql-sink"]
+CONNECTORS = ["bpjsk-mssql-source", "bpjsk-postgres-source", "bpjsk-postgres-sink", "bpjsk-mssql-sink"]
 KSQL_OUTPUTS = ["PG_CLAIM_TO_MSSQL", "PG_MEMBERSHIP_TO_MSSQL", "PG_CONTRIBUTION_TO_MSSQL",
                 "MSSQL_CLAIM_TO_PG", "MSSQL_MEMBERSHIP_TO_PG", "MSSQL_CONTRIBUTION_TO_PG"]
 
@@ -108,8 +108,8 @@ class Skip(Exception):
 TABLES = {
     "membership": {"ms": "dbo.BPJSMembership", "pg": "public.bpjs_membership",
                    "key": "membership_id", "value": "full_name",
-                   "topic_ms": "mssql-bpjstk-cdc.BPJSTK_POC.dbo.BPJSMembership",
-                   "topic_pg": "pg-bpjstk-cdc.public.bpjs_membership"},
+                   "topic_ms": "mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMembership",
+                   "topic_pg": "pg-bpjsk-cdc.public.bpjs_membership"},
     "contribution": {"ms": "dbo.BPJSMonthlyContribution", "pg": "public.bpjs_monthly_contribution",
                      "key": "contribution_id", "value": "payment_status"},
     "claim": {"ms": "dbo.BPJSClaim", "pg": "public.bpjs_claim",

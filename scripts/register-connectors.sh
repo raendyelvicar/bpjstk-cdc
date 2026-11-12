@@ -16,8 +16,8 @@ register() {
 
 # Order matters: sources create the CDC topics, ksqlDB filters them into the
 # *.to-mssql / *.to-pg topics (loop prevention), and the sinks read those.
-register configs/source/bpjstk-mssql-source.json \
-         configs/source/bpjstk-postgres-source.json
+register configs/source/bpjsk-mssql-source.json \
+         configs/source/bpjsk-postgres-source.json
 "$(dirname "$0")/register-ksqldb.sh"
-register configs/sink/bpjstk-postgres-sink.json \
-         configs/sink/bpjstk-mssql-sink.json
+register configs/sink/bpjsk-postgres-sink.json \
+         configs/sink/bpjsk-mssql-sink.json

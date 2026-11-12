@@ -1,4 +1,4 @@
--- Manual replication test, SQL Server side (BPJSTK_POC). Run one step at a time
+-- Manual replication test, SQL Server side (bpjsk_poc). Run one step at a time
 -- and check PostgreSQL (and the Kafka topics) before the next step.
 --
 -- Writer rules (see sql/mssql-03-lww-trigger.sql):
@@ -12,7 +12,7 @@
 -- Test rows: BPJS number CDCT2..., NIK 992..., claim number CDCT-MS-...
 -- (tests/test_cdc.py cleanup also deletes CDCT rows).
 -- CDC capture runs on SQL Server Agent, so allow a few seconds per step.
-USE BPJSTK_POC;
+USE bpjsk_poc;
 GO
 
 -- ============================================================ 1. INSERT parent

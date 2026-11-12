@@ -1,5 +1,5 @@
 {
-    "name": "bpjstk-mssql-source",
+    "name": "bpjsk-mssql-source",
     "config": {
         "connector.class": "io.debezium.connector.sqlserver.SqlServerConnector",
         "tasks.max": "1",
@@ -7,13 +7,11 @@
         "database.port": "1433",
         "database.user": "sa",
         "database.password": "${env:MSSQL_PASSWORD}",
-        "database.names": "BPJSTK_POC",
+        "database.names": "bpjsk_poc",
         "database.encrypt": "false",
-        "topic.prefix": "mssql-bpjstk-cdc",
+        "topic.prefix": "mssql-bpjsk-cdc",
         "table.include.list": "dbo.BPJSClaim,dbo.BPJSMembership,dbo.BPJSMonthlyContribution",
-        "TODO(remote-kafka) schema.history.internal.kafka.bootstrap.servers": "Point at the remote broker (host:port reachable from the Connect container, e.g. kafka.kodehive.id:9092). The schema-history client does NOT inherit the worker's security settings: if the broker uses SASL/SSL, also add schema.history.internal.producer.security.protocol / .sasl.mechanism / .sasl.jaas.config and the same under schema.history.internal.consumer.*",
         "schema.history.internal.kafka.bootstrap.servers": "kafka:29092",
-        "TODO(verify) schema.history.internal.kafka.topic": "Still named after the old Orders POC; consider schema-changes.mssql.bpjstk. Changing it on an already-registered connector loses schema history, so decide before first registration.",
         "schema.history.internal.kafka.topic": "schema-changes.mssql.orders",
         "tombstones.on.delete": "true",
         "decimal.handling.mode": "double",

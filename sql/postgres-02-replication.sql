@@ -1,4 +1,4 @@
--- Run as the owner of the bpjs_* tables (developer) on bpjstk_poc.
+-- Run as the owner of the bpjs_* tables (developer) on bpjsk_poc.
 -- :pw is the password for the Debezium replication user.
 DO $$
 BEGIN
@@ -8,7 +8,7 @@ BEGIN
 END $$;
 ALTER ROLE debezium_replication PASSWORD :'pw';
 
-GRANT CONNECT ON DATABASE bpjstk_poc TO debezium_replication;
+GRANT CONNECT ON DATABASE bpjsk_poc TO debezium_replication;
 GRANT USAGE ON SCHEMA public TO debezium_replication;
 GRANT SELECT ON public.bpjs_membership, public.bpjs_monthly_contribution, public.bpjs_claim
   TO debezium_replication;

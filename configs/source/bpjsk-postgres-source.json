@@ -1,5 +1,5 @@
 {
-    "name": "bpjstk-postgres-source",
+    "name": "bpjsk-postgres-source",
     "config": {
         "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
         "tasks.max": "1",
@@ -7,11 +7,11 @@
         "database.port": "5432",
         "database.user": "debezium_replication",
         "database.password": "${env:PG_PASSWORD}",
-        "database.dbname": "bpjstk_poc",
+        "database.dbname": "bpjsk_poc",
         "plugin.name": "pgoutput",
         "publication.name": "dbz_publication",
         "slot.name": "debezium_pg_slot",
-        "topic.prefix": "pg-bpjstk-cdc",
+        "topic.prefix": "pg-bpjsk-cdc",
         "table.include.list": "public.bpjs_claim,public.bpjs_membership,public.bpjs_monthly_contribution",
         "tombstones.on.delete": "true",
         "decimal.handling.mode": "double",

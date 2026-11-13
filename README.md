@@ -1,4 +1,4 @@
-# BPJS TK CDC POC: SQL Server ⇄ PostgreSQL
+# BPJS KESEHATAN CDC POC: SQL Server ⇄ PostgreSQL
 
 Active-active replication between SQL Server and PostgreSQL for the BPJS TK
 tables (membership, monthly contribution, claim). Both directions run through

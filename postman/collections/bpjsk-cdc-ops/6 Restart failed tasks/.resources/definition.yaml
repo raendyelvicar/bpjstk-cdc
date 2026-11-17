@@ -1,0 +1,4 @@
+$kind: collection
+description: |-
+  Restart only the failed connector instances and tasks of the four connectors.
+order: 6000

@@ -195,6 +195,37 @@ Run [tests/manual/mssql-test-dml.sql](tests/manual/mssql-test-dml.sql) or
 [tests/manual/pg-test-dml.sql](tests/manual/pg-test-dml.sql) one step at a time. After each step, check
 the other database.
 
+## Operating through the APIs (Postman)
+
+Everything on the Kafka side can also be done through the Kafka Connect and ksqlDB REST APIs, with the
+**BPJS CDC Ops** Postman collection in [postman/collections/bpjsk-cdc-ops](postman/collections/bpjsk-cdc-ops)
+and its `local`, `development` and `staging` environments in [postman/environments](postman/environments).
+The database step (`setup-db.sh`) has no API: run it once per environment first.
+
+| Folder | What it does |
+|---|---|
+| `1 Check` | Read only: connector states, each connector's target host, port and login, sink logins and `dropLogin`, ksqlDB health, the six filter queries |
+| `2 Pause` | Pause the four connectors (sinks first) |
+| `3 Update connectors` | `PUT` the four configs: create, or update in place with offsets kept |
+| `4 Loop filter` | Create the raw streams if missing, then upgrade each filter in place, waiting until ksqlDB has executed it |
+| `5 Resume` | Resume the four connectors (sources first) |
+| `6 Restart failed tasks` | Restart only failed connector instances and tasks |
+
+Run folders with the Postman CLI. [scripts/postman-run.sh](scripts/postman-run.sh) fills every value,
+passwords included, from `.env.$APP_ENV`, the same settings the shell scripts use:
+
+```bash
+APP_ENV=development bash scripts/postman-run.sh "1 Check"
+APP_ENV=development bash scripts/postman-run.sh "2 Pause" "3 Update connectors"
+```
+
+At least one folder is required. Extra CLI flags go after `--`. The committed environments have no
+passwords. In the Postman app, fill the secret variables in your own copy of the environment.
+
+The collection is **generated**: request bodies come from `configs/*.json` and the statements from
+`sql/ksqldb-01-loop-filter.sql`. After changing either one, run `python3 scripts/gen-postman.py`. Don't
+edit the files under `postman/collections/bpjsk-cdc-ops/` by hand.
+
 ## Rules for writing data
 
 Every writer, whether an app or a person, must follow these rules. Otherwise changes are dropped without
@@ -270,7 +301,9 @@ After `down -v`, repeat steps 2–4.
 configs/source/      Debezium source connector configs (SQL Server, PostgreSQL)
 configs/sink/        Debezium JDBC sink configs (column renames, routing, DLQ)
 sql/                 Schema, CDC/replication, LWW triggers, FK toggles, ksqlDB loop filter
-scripts/             env.sh (settings), render-config.sh, setup-db.sh, register-connectors.sh, register-ksqldb.sh
+scripts/             env.sh (settings), render-config.sh, setup-db.sh, register-connectors.sh, register-ksqldb.sh,
+                     gen-postman.py, postman-run.sh
+postman/             Postman collection (generated) and environments
 tests/test_cdc.py    Automated end-to-end test suite
 tests/manual/        Step-by-step manual DML scripts
 Dockerfile.connect   Debezium Connect image with the JDBC sink and scripting plugins

@@ -1,0 +1,116 @@
+name: 'BPJS CDC staging'
+values:
+  - key: CONNECT_KAFKA_BOOTSTRAP
+    value: '<broker as the Connect worker reaches it>'
+    enabled: true
+    type: default
+  - key: CONNECT_MSSQL_HOST
+    value: '<staging SQL Server host>'
+    enabled: true
+    type: default
+  - key: CONNECT_MSSQL_PORT
+    value: '1433'
+    enabled: true
+    type: default
+  - key: CONNECT_PG_HOST
+    value: '<staging PostgreSQL host>'
+    enabled: true
+    type: default
+  - key: CONNECT_PG_PORT
+    value: '5432'
+    enabled: true
+    type: default
+  - key: CONNECT_URL
+    value: 'https://<staging connect host>'
+    enabled: true
+    type: default
+  - key: CONNECT_USER
+    value: ''
+    enabled: true
+    type: default
+  - key: KSQLDB_URL
+    value: 'https://<staging ksqldb host>'
+    enabled: true
+    type: default
+  - key: KSQLDB_USER
+    value: ''
+    enabled: true
+    type: default
+  - key: MSSQL_DB
+    value: 'bpjsk_poc'
+    enabled: true
+    type: default
+  - key: MSSQL_SINK_DB
+    value: 'bpjsk_poc'
+    enabled: true
+    type: default
+  - key: MSSQL_SINK_HOST
+    value: '<staging SQL Server host>'
+    enabled: true
+    type: default
+  - key: MSSQL_SINK_PORT
+    value: '1433'
+    enabled: true
+    type: default
+  - key: MSSQL_SINK_USER
+    value: 'cdc_sink'
+    enabled: true
+    type: default
+  - key: MSSQL_USER
+    value: 'sa'
+    enabled: true
+    type: default
+  - key: PG_DB
+    value: 'bpjsk_poc'
+    enabled: true
+    type: default
+  - key: PG_SINK_DB
+    value: 'bpjsk_poc'
+    enabled: true
+    type: default
+  - key: PG_SINK_HOST
+    value: '<staging PostgreSQL host>'
+    enabled: true
+    type: default
+  - key: PG_SINK_PORT
+    value: '5432'
+    enabled: true
+    type: default
+  - key: PG_SINK_USER
+    value: 'cdc_sink'
+    enabled: true
+    type: default
+  - key: PG_USER
+    value: 'debezium_replication'
+    enabled: true
+    type: default
+  - key: CONNECT_PWD
+    value: ''
+    enabled: true
+    type: secret
+    description: Filled from .env.$APP_ENV by scripts/postman-run.sh; never commit a value.
+  - key: KSQLDB_PASSWORD
+    value: ''
+    enabled: true
+    type: secret
+    description: Filled from .env.$APP_ENV by scripts/postman-run.sh; never commit a value.
+  - key: MSSQL_USER_PASSWORD
+    value: ''
+    enabled: true
+    type: secret
+    description: Filled from .env.$APP_ENV by scripts/postman-run.sh; never commit a value.
+  - key: PG_USER_PASSWORD
+    value: ''
+    enabled: true
+    type: secret
+    description: Filled from .env.$APP_ENV by scripts/postman-run.sh; never commit a value.
+  - key: MSSQL_SINK_PASSWORD
+    value: ''
+    enabled: true
+    type: secret
+    description: Filled from .env.$APP_ENV by scripts/postman-run.sh; never commit a value.
+  - key: PG_SINK_PASSWORD
+    value: ''
+    enabled: true
+    type: secret
+    description: Filled from .env.$APP_ENV by scripts/postman-run.sh; never commit a value.

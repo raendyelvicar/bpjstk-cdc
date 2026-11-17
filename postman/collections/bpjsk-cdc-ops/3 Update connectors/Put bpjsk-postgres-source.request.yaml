@@ -1,0 +1,38 @@
+$kind: http-request
+description: |-
+  From configs/source/bpjsk-postgres-source.json.
+method: PUT
+url: '{{CONNECT_URL}}/connectors/bpjsk-postgres-source/config'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "{{CONNECT_PG_HOST}}",
+        "database.port": "{{CONNECT_PG_PORT}}",
+        "database.user": "{{PG_USER}}",
+        "database.password": "{{PG_USER_PASSWORD}}",
+        "database.dbname": "{{PG_DB}}",
+        "plugin.name": "pgoutput",
+        "publication.name": "dbz_publication",
+        "slot.name": "debezium_pg_slot",
+        "topic.prefix": "pg-bpjsk-cdc",
+        "table.include.list": "public.bpjs_claim,public.bpjs_membership,public.bpjs_monthly_contribution",
+        "tombstones.on.delete": "true",
+        "decimal.handling.mode": "double",
+        "publication.autocreate.mode": "disabled",
+        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "key.converter.schemas.enable": "true",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": "true"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200/201', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200, 201]));

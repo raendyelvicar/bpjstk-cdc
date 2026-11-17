@@ -1,0 +1,4 @@
+$kind: collection
+description: |-
+  PUT /connectors/<name>/config: creates a missing connector, updates an existing one in place (offsets kept, a paused connector stays paused). Bodies come from configs/*.json.
+order: 3000

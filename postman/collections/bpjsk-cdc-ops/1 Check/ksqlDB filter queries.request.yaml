@@ -1,0 +1,33 @@
+$kind: http-request
+method: POST
+url: '{{KSQLDB_URL}}/ksql'
+order: 5000
+headers:
+  - key: Content-Type
+    value: application/json
+auth:
+  type: basic
+  credentials:
+    - key: username
+      value: '{{KSQLDB_USER}}'
+    - key: password
+      value: '{{KSQLDB_PASSWORD}}'
+body:
+  type: json
+  content: |-
+    {
+      "ksql": "SHOW QUERIES;"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200]));
+      const queries = pm.response.json()[0].queries;
+      for (const out of ["PG_CLAIM_TO_MSSQL", "PG_MEMBERSHIP_TO_MSSQL", "PG_CONTRIBUTION_TO_MSSQL", "MSSQL_CLAIM_TO_PG", "MSSQL_MEMBERSHIP_TO_PG", "MSSQL_CONTRIBUTION_TO_PG"]) {
+        pm.test(`${out} RUNNING`, () => {
+          const q = queries.find(x => x.sinks.map(s => s.toUpperCase()).includes(out));
+          pm.expect(q, 'no query writes ' + out).to.be.an('object');
+          pm.expect(q.state).to.equal('RUNNING');
+        });
+      }

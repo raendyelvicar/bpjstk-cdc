@@ -32,6 +32,9 @@ put() {
     case $code in
       200) echo "updated" ;;
       201) echo "created" ;;
+      401|403) echo "HTTP $code"
+        echo "Connect at $CONNECT_URL rejected the credentials: set CONNECT_USER / CONNECT_PWD in $ENV_FILE." >&2
+        exit 1 ;;
       *) echo "HTTP $code"; sed '$d' <<<"$out" | jq . 2>/dev/null || sed '$d' <<<"$out"; exit 1 ;;
     esac
   done

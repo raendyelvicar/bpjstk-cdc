@@ -1,0 +1,4 @@
+$kind: collection
+description: |-
+  Pause all four connectors (sinks first). Offsets are kept; resume with 5 Resume.
+order: 2000

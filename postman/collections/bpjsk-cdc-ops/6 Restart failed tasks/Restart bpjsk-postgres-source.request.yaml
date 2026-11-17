@@ -1,0 +1,14 @@
+$kind: http-request
+method: POST
+url: '{{CONNECT_URL}}/connectors/bpjsk-postgres-source/restart?includeTasks=true&onlyFailed=true'
+queryParams:
+  - key: includeTasks
+    value: 'true'
+  - key: onlyFailed
+    value: 'true'
+order: 2000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200/202/204', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200, 202, 204]));

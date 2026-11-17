@@ -1,0 +1,38 @@
+$kind: http-request
+description: |-
+  From configs/source/bpjsk-mssql-source.json.
+method: PUT
+url: '{{CONNECT_URL}}/connectors/bpjsk-mssql-source/config'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+        "connector.class": "io.debezium.connector.sqlserver.SqlServerConnector",
+        "tasks.max": "1",
+        "database.hostname": "{{CONNECT_MSSQL_HOST}}",
+        "database.port": "{{CONNECT_MSSQL_PORT}}",
+        "database.user": "{{MSSQL_USER}}",
+        "database.password": "{{MSSQL_USER_PASSWORD}}",
+        "database.names": "{{MSSQL_DB}}",
+        "database.encrypt": "false",
+        "topic.prefix": "mssql-bpjsk-cdc",
+        "table.include.list": "dbo.BPJSClaim,dbo.BPJSMembership,dbo.BPJSMonthlyContribution",
+        "schema.history.internal.kafka.bootstrap.servers": "{{CONNECT_KAFKA_BOOTSTRAP}}",
+        "schema.history.internal.kafka.topic": "schema-changes.mssql.orders",
+        "tombstones.on.delete": "true",
+        "decimal.handling.mode": "double",
+        "time.precision.mode": "connect",
+        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "key.converter.schemas.enable": "true",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": "true"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200/201', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200, 201]));

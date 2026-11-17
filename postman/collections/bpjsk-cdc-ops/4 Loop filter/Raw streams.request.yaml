@@ -1,0 +1,20 @@
+$kind: http-request
+method: POST
+url: '{{KSQLDB_URL}}/ksql'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "ksql": "CREATE STREAM IF NOT EXISTS pg_claim_raw (k STRING KEY, v STRING)\n  WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_claim', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');\n\nCREATE STREAM IF NOT EXISTS pg_membership_raw (k STRING KEY, v STRING)\n  WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_membership', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');\n\nCREATE STREAM IF NOT EXISTS pg_contribution_raw (k STRING KEY, v STRING)\n  WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_monthly_contribution', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');\n\nCREATE STREAM IF NOT EXISTS mssql_claim_raw (k STRING KEY, v STRING)\n  WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSClaim', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');\n\nCREATE STREAM IF NOT EXISTS mssql_membership_raw (k STRING KEY, v STRING)\n  WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMembership', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');\n\nCREATE STREAM IF NOT EXISTS mssql_contribution_raw (k STRING KEY, v STRING)\n  WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMonthlyContribution', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');",
+      "streamsProperties": {
+        "auto.offset.reset": "earliest"
+      },
+      "sessionVariables": {
+        "PG_SINK_USER": "{{PG_SINK_USER}}",
+        "MSSQL_SINK_USER": "{{MSSQL_SINK_USER}}"
+      }
+    }

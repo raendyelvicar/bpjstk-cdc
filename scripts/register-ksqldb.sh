@@ -40,7 +40,7 @@ for _ in $(seq 60); do
   curl -sf "${CURL_AUTH[@]}" "$KSQL/info" >/dev/null && break
   sleep 2
 done
-curl -sf "${CURL_AUTH[@]}" "$KSQL/info" >/dev/null || { echo "ksqlDB not reachable at $KSQL" >&2; exit 1; }
+curl -sf "${CURL_AUTH[@]}" "$KSQL/info" >/dev/null || { echo "ksqlDB not reachable at $KSQL (if it needs basic auth, set KSQLDB_USER / KSQLDB_PASSWORD in $ENV_FILE)" >&2; exit 1; }
 
 existing=$(ksql "LIST TOPICS;" | jq -r '.[0].topics[].name')
 for t in $(grep -o "KAFKA_TOPIC='[^']*'" "$SQL_FILE" | grep -v "\.to-" | sed "s/KAFKA_TOPIC='//; s/'//"); do

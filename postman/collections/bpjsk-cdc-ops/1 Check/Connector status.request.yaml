@@ -1,0 +1,22 @@
+$kind: http-request
+method: GET
+url: '{{CONNECT_URL}}/connectors?expand=status'
+queryParams:
+  - key: expand
+    value: status
+order: 2000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200]));
+      const all = pm.response.json();
+      for (const name of ["bpjsk-mssql-source", "bpjsk-postgres-source", "bpjsk-postgres-sink", "bpjsk-mssql-sink"]) {
+        pm.test(`${name} RUNNING`, () => {
+          pm.expect(all, 'not registered').to.have.property(name);
+          const s = all[name].status;
+          const states = [s.connector.state, ...s.tasks.map(t => t.state)];
+          pm.expect(s.tasks, 'no tasks').to.not.be.empty;
+          pm.expect(states.every(x => x === 'RUNNING'), states.join(',')).to.equal(true);
+        });
+      }

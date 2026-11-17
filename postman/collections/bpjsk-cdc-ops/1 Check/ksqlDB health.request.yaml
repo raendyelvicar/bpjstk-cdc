@@ -1,0 +1,17 @@
+$kind: http-request
+method: GET
+url: '{{KSQLDB_URL}}/healthcheck'
+order: 4000
+auth:
+  type: basic
+  credentials:
+    - key: username
+      value: '{{KSQLDB_USER}}'
+    - key: password
+      value: '{{KSQLDB_PASSWORD}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200]));
+      pm.test('healthy', () => pm.expect(pm.response.json().isHealthy, JSON.stringify(pm.response.json().details)).to.equal(true));

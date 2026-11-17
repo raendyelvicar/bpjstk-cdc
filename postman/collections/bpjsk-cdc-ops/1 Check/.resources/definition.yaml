@@ -1,0 +1,4 @@
+$kind: collection
+description: |-
+  Read only. Connectors, sink logins, ksqlDB health and filter queries.
+order: 1000

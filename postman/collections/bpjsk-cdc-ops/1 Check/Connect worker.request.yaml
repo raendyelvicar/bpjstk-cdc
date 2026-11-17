@@ -1,0 +1,10 @@
+$kind: http-request
+method: GET
+url: '{{CONNECT_URL}}/'
+order: 1000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200]));
+      pm.test('Connect version', () => pm.expect(pm.response.json().version).to.be.a('string'));

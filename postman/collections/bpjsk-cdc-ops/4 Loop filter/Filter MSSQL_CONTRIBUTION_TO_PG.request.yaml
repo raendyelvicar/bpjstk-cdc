@@ -1,0 +1,20 @@
+$kind: http-request
+method: POST
+url: '{{KSQLDB_URL}}/ksql'
+order: 7000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "ksql": "CREATE OR REPLACE STREAM mssql_contribution_to_pg\n  WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMonthlyContribution.to-pg', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA') AS\n  SELECT k, CASE WHEN v LIKE '{%' THEN CASE WHEN EXTRACTJSONFIELD(v, '$.payload.op') = 'd' THEN '{\"schema\":{\"type\":\"struct\",\"name\":\"bpjsk.delete.Envelope\",\"optional\":false,\"fields\":[{\"type\":\"struct\",\"optional\":true,\"field\":\"before\",\"fields\":[]},{\"type\":\"struct\",\"optional\":true,\"field\":\"after\",\"fields\":[]},{\"type\":\"string\",\"optional\":false,\"field\":\"op\"}]},\"payload\":{\"before\":{},\"after\":null,\"op\":\"d\"}}' ELSE v END ELSE v END AS v\n  FROM mssql_contribution_raw\n  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(LCASE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.db_login'), 'null')), '')\n                               <> LCASE('${MSSQL_SINK_USER}') ELSE true END;",
+      "streamsProperties": {
+        "auto.offset.reset": "earliest"
+      },
+      "sessionVariables": {
+        "PG_SINK_USER": "{{PG_SINK_USER}}",
+        "MSSQL_SINK_USER": "{{MSSQL_SINK_USER}}"
+      }
+    }

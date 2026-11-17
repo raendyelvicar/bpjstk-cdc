@@ -1,0 +1,47 @@
+$kind: collection
+description: |-
+  Creates the raw streams if missing, then applies each filter with CREATE OR REPLACE (an in-place upgrade: same query, offsets kept). Each request waits until ksqlDB has executed it. Afterwards ksqlDB rebalances for a minute or more; run 1 Check until it is healthy. The CDC source topics must exist (scripts/register-ksqldb.sh creates missing ones; this folder does not).
+order: 4000
+auth:
+  type: basic
+  credentials:
+    - key: username
+      value: '{{KSQLDB_USER}}'
+    - key: password
+      value: '{{KSQLDB_PASSWORD}}'
+scripts:
+  - type: http:afterResponse
+    language: text/javascript
+    code: |-
+      // Every statement must be accepted, and ksqlDB must finish executing it before
+      // the next one is sent: an in-place upgrade can take a minute, and statements
+      // queued behind it would otherwise time out (see scripts/register-ksqldb.sh).
+      let res;
+      try { res = pm.response.json(); } catch (e) { res = pm.response.text(); }
+      pm.test('statement accepted', () => {
+        pm.expect(Array.isArray(res), JSON.stringify(res).slice(0, 800)).to.equal(true);
+        pm.expect(res.filter(e => e['@type'] === 'statement_error').map(e => e.message)).to.be.empty;
+      });
+      const seqs = (Array.isArray(res) ? res : [])
+        .map(e => e.commandSequenceNumber).filter(n => typeof n === 'number' && n >= 0);
+      if (seqs.length) {
+        const seq = Math.max(...seqs);
+        const headers = [{ key: 'Content-Type', value: 'application/vnd.ksql.v1+json' }];
+        const user = pm.variables.get('KSQLDB_USER');
+        if (user) {
+          const token = CryptoJS.enc.Base64.stringify(CryptoJS.enc.Utf8.parse(user + ':' + (pm.variables.get('KSQLDB_PASSWORD') || '')));
+          headers.push({ key: 'Authorization', value: 'Basic ' + token });
+        }
+        const deadline = Date.now() + 5 * 60 * 1000;
+        let done = false;
+        while (!done && Date.now() < deadline) {
+          // Waits server-side until every command up to seq has run (gives up after a few seconds; ask again).
+          const r = await pm.sendRequest({
+            url: pm.variables.replaceIn('{{KSQLDB_URL}}') + '/ksql', method: 'POST', header: headers,
+            body: { mode: 'raw', raw: JSON.stringify({ ksql: 'LIST STREAMS;', commandSequenceNumber: seq }) }
+          });
+          try { done = Array.isArray(r.json()); } catch (e) { done = false; }
+          if (!done) await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        pm.test(`ksqlDB executed command ${seq}`, () => pm.expect(done, 'not done after 5 minutes').to.equal(true));
+      }

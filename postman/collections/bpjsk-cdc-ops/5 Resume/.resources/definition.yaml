@@ -1,0 +1,4 @@
+$kind: collection
+description: |-
+  Resume all four connectors, sources first.
+order: 5000

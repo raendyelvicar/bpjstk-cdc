@@ -15,7 +15,8 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "env.sh: $ENV_FILE not found (APP_ENV=$APP_ENV); copy .env.example to it." >&2
   return 1 2>/dev/null || exit 1
 fi
-echo "env.sh: using $ENV_FILE" >&2
+# Announce once: child scripts (render-config.sh) source this again.
+[ -n "${ENV_SH_ANNOUNCED:-}" ] || { echo "env.sh: using $ENV_FILE" >&2; export ENV_SH_ANNOUNCED=1; }
 # Read VAR=value lines literally (no quote removal, no $ expansion, so
 # passwords with $ survive). A variable already set in the environment wins,
 # e.g. "PG_HOST=localhost scripts/setup-db.sh".

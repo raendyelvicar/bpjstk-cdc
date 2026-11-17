@@ -1,0 +1,37 @@
+$kind: http-request
+description: |-
+  Each connector targets the databases and logins of this environment. The sinks must connect as the dedicated sink logins and drop db_login; otherwise the loop filter lets echoes through, or drops real writes.
+method: GET
+url: '{{CONNECT_URL}}/connectors?expand=info'
+queryParams:
+  - key: expand
+    value: info
+order: 3000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 200', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([200]));
+      const all = pm.response.json();
+      const v = k => String(pm.variables.get(k) || '');
+      const lc = s => String(s || '').toLowerCase();
+      const cfg = name => { const c = all[name] && all[name].info.config; pm.expect(c, name + ' not registered').to.be.an('object'); return c; };
+      const sources = { 'bpjsk-mssql-source': ['CONNECT_MSSQL_HOST', 'CONNECT_MSSQL_PORT', 'MSSQL_USER'],
+                        'bpjsk-postgres-source': ['CONNECT_PG_HOST', 'CONNECT_PG_PORT', 'PG_USER'] };
+      for (const [name, [h, p, u]] of Object.entries(sources)) {
+        pm.test(`${name} reads ${v(h)}:${v(p)} as ${v(u)}`, () => {
+          const c = cfg(name);
+          pm.expect(`${c['database.hostname']}:${c['database.port']}`).to.equal(`${v(h)}:${v(p)}`);
+          pm.expect(lc(c['database.user'])).to.equal(lc(v(u)));
+        });
+      }
+      const sinks = { 'bpjsk-mssql-sink': ['MSSQL_SINK_HOST', 'MSSQL_SINK_PORT', 'MSSQL_SINK_USER'],
+                      'bpjsk-postgres-sink': ['PG_SINK_HOST', 'PG_SINK_PORT', 'PG_SINK_USER'] };
+      for (const [name, [h, p, u]] of Object.entries(sinks)) {
+        pm.test(`${name} writes ${v(h)}:${v(p)} as ${v(u)} and drops db_login`, () => {
+          const c = cfg(name);
+          pm.expect(c['connection.url']).to.include(`//${v(h)}:${v(p)}`);
+          pm.expect(lc(c['connection.username'])).to.equal(lc(v(u)));
+          pm.expect(c['transforms.dropLogin.exclude']).to.equal('db_login');
+        });
+      }

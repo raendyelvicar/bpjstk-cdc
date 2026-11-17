@@ -1,0 +1,9 @@
+$kind: http-request
+method: PUT
+url: '{{CONNECT_URL}}/connectors/bpjsk-mssql-sink/pause'
+order: 2000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('HTTP 202', () => pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.be.oneOf([202]));

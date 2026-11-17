@@ -1,12 +1,16 @@
 -- Run as the owner of the bpjs_* tables (developer) on bpjsk_poc.
--- :pw is the password for the Debezium replication user.
+-- :pw is the password for the Debezium replication user. Leave it unset to
+-- keep the role's current password (setup-db.sh does when the PostgreSQL source
+-- connects as another login, PG_USER).
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'debezium_replication') THEN
     CREATE ROLE debezium_replication WITH LOGIN REPLICATION;
   END IF;
 END $$;
+\if :{?pw}
 ALTER ROLE debezium_replication PASSWORD :'pw';
+\endif
 
 GRANT CONNECT ON DATABASE bpjsk_poc TO debezium_replication;
 GRANT USAGE ON SCHEMA public TO debezium_replication;

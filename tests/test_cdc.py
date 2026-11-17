@@ -4,6 +4,9 @@
     python tests/test_cdc.py                 # all tests, then delete the test rows
     python tests/test_cdc.py TC-01 TC-05     # selected tests
     python tests/test_cdc.py --keep          # leave the test rows in place
+    python tests/test_cdc.py --allow-remote  # required when the env file points at non-local databases
+
+Settings come from .env.$APP_ENV (default .env.local; or $ENV_FILE), with the same names and defaults as scripts/env.sh.
 
 Test rows are marked by BPJSNumber 'CDCT...' and NIK '99...' (99 is not a
 valid province code), which is what the cleanup deletes.
@@ -25,7 +28,7 @@ except ImportError:
     KafkaConsumer = KafkaProducer = None
 
 
-def load_env(path=".env"):
+def load_env(path=os.getenv("ENV_FILE", ".env." + os.getenv("APP_ENV", "local"))):
     if os.path.exists(path):
         for line in open(path):
             line = line.strip()
@@ -35,6 +38,13 @@ def load_env(path=".env"):
 
 
 load_env()
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_remote = sorted({h for h in (os.getenv("MSSQL_HOST", "localhost"), os.getenv("PG_HOST", "localhost"))
+                  if h not in LOCAL_HOSTS})
+if _remote and "--allow-remote" not in sys.argv[1:]:
+    sys.exit(f"Refusing to run against {', '.join(_remote)}: the tests insert and delete CDCT* rows. "
+             "Pass --allow-remote if that is intended.")
 
 MSSQL_PASSWORD = os.environ["MSSQL_PASSWORD"]
 PG_PASSWORD = os.environ["PG_PASSWORD"]
@@ -47,7 +57,10 @@ MSSQL_DB = os.getenv("MSSQL_DB", "bpjsk_poc")
 PG_HOST = os.getenv("PG_HOST", "localhost")
 PG_PORT = int(os.getenv("PG_PORT", "5432"))
 PG_DB = os.getenv("PG_DB", "bpjsk_poc")
-PG_USER = os.getenv("PG_USER", os.getenv("PG_ADMIN_USER", "postgres"))
+# The tests write as the admin logins (never as a sink login: the loop filter
+# would drop those writes).
+MSSQL_ADMIN_USER = os.getenv("MSSQL_ADMIN_USER", "sa")
+PG_USER = os.getenv("PG_ADMIN_USER", "postgres")
 CONNECT_URL = os.getenv("CONNECT_URL", "http://localhost:8083")
 KSQLDB_URL = os.getenv("KSQLDB_URL", "http://localhost:8088")
 # TODO(remote-kafka): set KAFKA_BOOTSTRAP to the remote broker's externally advertised listener
@@ -94,7 +107,7 @@ class MSConn:
 
 
 ms = MSConn(pymssql.connect(
-    server=MSSQL_HOST, port=MSSQL_PORT, user="sa", password=MSSQL_PASSWORD,
+    server=MSSQL_HOST, port=MSSQL_PORT, user=MSSQL_ADMIN_USER, password=MSSQL_PASSWORD,
     database=MSSQL_DB, autocommit=True, login_timeout=15,
 ))
 
@@ -520,7 +533,7 @@ def tc16():
     # the foreign key, must leave SQL Server's IDENTITY where it was: the failed
     # insert moves it into the PostgreSQL range and a rollback doesn't undo that,
     # so the trigger reseeds it before re-raising the error.
-    cur = pymssql.connect(server=MSSQL_HOST, port=MSSQL_PORT, user="sa", password=MSSQL_PASSWORD,
+    cur = pymssql.connect(server=MSSQL_HOST, port=MSSQL_PORT, user=MSSQL_ADMIN_USER, password=MSSQL_PASSWORD,
                           database=MSSQL_DB, login_timeout=15)
     try:
         c = cur.cursor()
@@ -592,7 +605,7 @@ TESTS = [
 if __name__ == "__main__":
     args = sys.argv[1:]
     keep = "--keep" in args
-    only = {a for a in args if a != "--keep"}  # e.g. python tests/test_cdc.py TC-01 TC-02
+    only = {a for a in args if a not in ("--keep", "--allow-remote")}  # e.g. python tests/test_cdc.py TC-01 TC-02
     results = {}
     try:
         for name, fn in TESTS:

@@ -4,7 +4,7 @@
         "connector.class": "io.debezium.connector.jdbc.JdbcSinkConnector",
         "tasks.max": "2",
         "topics": "pg-bpjsk-cdc.public.bpjs_claim.to-mssql,pg-bpjsk-cdc.public.bpjs_membership.to-mssql,pg-bpjsk-cdc.public.bpjs_monthly_contribution.to-mssql",
-        "connection.url": "jdbc:sqlserver://sqlserver:1433;databaseName=bpjsk_poc;encrypt=false",
+        "connection.url": "jdbc:sqlserver://${env:MSSQL_SINK_HOST}:${env:MSSQL_SINK_PORT};databaseName=${env:MSSQL_SINK_DB};encrypt=false",
         "connection.username": "${env:MSSQL_SINK_USER}",
         "connection.password": "${env:MSSQL_SINK_PASSWORD}",
         "insert.mode": "upsert",

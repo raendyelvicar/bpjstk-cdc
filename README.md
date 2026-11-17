@@ -34,34 +34,57 @@ PostgreSQL ──(Debezium source)──► pg-bpjsk-cdc.*     ──(ksqlDB loo
 
 ## 1. Configure the environment
 
+Settings live in one file per environment, picked with `APP_ENV` (default `local`):
+
+| `APP_ENV` | File | Target |
+| --- | --- | --- |
+| `local` (default) | `.env.local` | local Docker stack |
+| `development` | `.env.development` | `*.kafka.kodehive.id` (Connect, ksqlDB, broker) and the `*.kodehive.id` databases |
+| `staging` | `.env.staging` | placeholder values for now |
+
 ```bash
-cp .env.example .env
+cp .env.example .env.local
+APP_ENV=development bash scripts/register-connectors.sh --dry-run   # any other environment
 ```
 
-Set both passwords in `.env`:
+Set both passwords in `.env.local`:
 
 ```dotenv
 MSSQL_PASSWORD=YourStr0ng!Passw0rd   # SQL Server `sa` password. It must meet SQL Server's complexity rules
 PG_PASSWORD=postgres_password        # `postgres` superuser and `debezium_replication` user
 ```
 
-Optionally, set the logins the sinks write with. Both default to `cdc_sink`, and their passwords default
-to the two passwords above. Passwords must not contain a single quote:
+The defaults (`localhost`, ports 1433 and 5432, database `bpjsk_poc`, sink logins `cdc_sink`) work with
+the local Docker stack, so you don't need to set anything else. All `.env.*` files except `.env.example`
+are git-ignored.
 
-```dotenv
-MSSQL_SINK_USER=cdc_sink
-MSSQL_SINK_PASSWORD=...
-PG_SINK_USER=cdc_sink
-PG_SINK_PASSWORD=...
-```
+### Settings for another environment (for example staging)
 
-The defaults (`localhost`, ports 1433 and 5432, database `bpjsk_poc`) work with the local Docker stack, so
-you don't need to set anything else. `.env` is git-ignored.
+Every script, the connector configs and the tests read their settings from `.env.$APP_ENV` through
+[scripts/env.sh](scripts/env.sh). [.env.example](.env.example) lists every setting and its default. A
+variable set in the shell wins over the file, and `ENV_FILE=<file>` selects another file, so you can keep
+one per environment.
+
+- **Connector configs** in `configs/` use `${env:VAR}` placeholders.
+  [scripts/render-config.sh](scripts/render-config.sh) fills them in from the env file before they are sent.
+  With `CONNECT_SECRETS=inline` (the default), passwords are written into the configs. Anyone with access
+  to the Connect REST API can read them, which matches the other connectors on the staging worker. With
+  `CONNECT_SECRETS=worker`, passwords stay `${env:...}`, and the Connect worker must have them set.
+- **Hosts.** `MSSQL_HOST` / `PG_HOST` are the databases as this machine reaches them. The Connect worker
+  uses the same values unless you set `CONNECT_MSSQL_HOST` / `CONNECT_PG_HOST`. When the hosts aren't set,
+  the worker uses the compose service names.
+- **Logins.** `MSSQL_ADMIN_USER` / `PG_ADMIN_USER` run `setup-db.sh` and the tests. `MSSQL_USER` / `PG_USER`
+  are the Debezium sources; the PostgreSQL one needs `REPLICATION`. `MSSQL_SINK_USER` / `PG_SINK_USER` are
+  the sinks. The scripts refuse a sink login that is also the admin login (or, for PostgreSQL, the source
+  login), because the loop filter would silently drop that login's writes.
+- **Preview** what would be sent, with passwords masked: `bash scripts/register-connectors.sh --dry-run`.
+- **The tests** refuse to run against databases that aren't local unless you pass `--allow-remote`,
+  because they insert and delete `CDCT…` rows.
 
 ## 2. Start the stack
 
 ```bash
-docker compose up -d --build
+docker compose --env-file .env.local up -d --build
 ```
 
 The first run builds the Kafka Connect image from [Dockerfile.connect](Dockerfile.connect), which adds the
@@ -109,7 +132,7 @@ You can run all of these scripts again safely.
 Each table replicates through its own topic, so a child row can arrive before its parent:
 
 ```bash
-set -a; source .env; set +a
+set -a; source .env.local; set +a
 docker exec -i postgres psql -U postgres -d bpjsk_poc < sql/postgres-04-disable-fk.sql
 docker exec -i sqlserver /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_PASSWORD" -C -I -b \
   -i /dev/stdin < sql/mssql-04-disable-fk.sql
@@ -123,7 +146,10 @@ Each file has a RESTORE section at the bottom that puts the foreign keys back.
 bash scripts/register-connectors.sh
 ```
 
-This script runs the steps in this order:
+The script sends each config with `PUT /connectors/<name>/config`. This creates a connector that doesn't
+exist yet and updates one that does, in place. Consumer offsets are kept, and a paused connector stays
+paused. To update only some connectors, pass their files, for example
+`bash scripts/register-connectors.sh configs/sink/*.json`. Without arguments, it runs these steps in order:
 
 1. Registers the two Debezium sources. They create the CDC topics.
 2. Runs [scripts/register-ksqldb.sh](scripts/register-ksqldb.sh), which applies the loop filter and writes
@@ -185,35 +211,27 @@ any error:
 ## Upgrading a stack from the user-ID loop filter
 
 On a local stack, the easiest way is to start over with `docker compose down -v`. To keep the data (for
-example on staging), follow these steps in order. Point the scripts at the environment first:
-`MSSQL_HOST`, `MSSQL_ADMIN_USER` (default `sa`), `PG_HOST`, `PG_ADMIN_USER`, `CONNECT_URL` and `KSQLDB_URL` (in `.env` or exported).
+example on staging), set `APP_ENV` and that environment's `.env.*` file (see
+[Settings for another environment](#settings-for-another-environment-for-example-staging)), check it with
+`bash scripts/register-connectors.sh --dry-run`, and then follow these steps in order. `$CONNECT_URL` below
+is the Connect endpoint (add `-u user:password` if it uses basic auth).
 
-1. **Choose the sink logins.** Set `MSSQL_SINK_USER` / `MSSQL_SINK_PASSWORD` and `PG_SINK_USER` /
-   `PG_SINK_PASSWORD`. No app may connect as these logins.
-2. **Stop app writes and let replication drain.** Recreating a SQL Server capture instance drops its
+1. **Stop app writes and let replication drain.** Recreating a SQL Server capture instance drops its
    change table, so any change Debezium hasn't read yet is lost. Wait until the consumer lag of the
    sources, the ksqlDB queries and the sinks is 0.
-3. **Pause all four connectors:**
+2. **Pause all four connectors:**
    `for c in bpjsk-mssql-source bpjsk-postgres-source bpjsk-postgres-sink bpjsk-mssql-sink; do curl -s -X PUT $CONNECT_URL/connectors/$c/pause; done`
-4. **Run `bash scripts/setup-db.sh`.** It adds `db_login` on both nodes, updates the triggers, creates the
+3. **Run `bash scripts/setup-db.sh`.** It adds `db_login` on both nodes, updates the triggers, creates the
    sink logins and recreates the SQL Server capture instances (it prints one "Recreating…" line per table).
-5. **Give Kafka Connect the `*_SINK_*` variables** and restart the worker (with this compose file:
-   `docker compose up -d kafka-connect`). The sink configs read them through `${env:...}`. Paused
-   connectors stay paused.
-6. **Update the sink configs in place.** A `PUT` keeps their consumer offsets:
-   ```bash
-   for c in bpjsk-postgres-sink bpjsk-mssql-sink; do
-     jq '.config | with_entries(select(.key | (startswith("TODO(") or startswith("NOTE ")) | not))' configs/sink/$c.json \
-       | curl -s -X PUT -H "Content-Type: application/json" --data @- $CONNECT_URL/connectors/$c/config >/dev/null
-   done
-   ```
-   The sinks stay paused through the `PUT`.
-7. **Run `bash scripts/register-ksqldb.sh --replace`.** It upgrades the six filter queries in place and
+4. **Update the four connectors in place:**
+   `bash scripts/register-connectors.sh configs/source/*.json configs/sink/*.json`. Their offsets are kept,
+   and they stay paused.
+5. **Run `bash scripts/register-ksqldb.sh --replace`.** It upgrades the six filter queries in place and
    waits for each one. Afterwards ksqlDB rebalances its stream threads for one to a few minutes, which
-   pauses filtering but loses nothing. Wait until `curl $KSQLDB_URL/healthcheck` reports healthy and the
+   pauses filtering but loses nothing. Wait until `$KSQLDB_URL/healthcheck` reports healthy and the
    `_confluent-ksql-*` consumer groups have no lag.
-8. **Resume the connectors**, sources first, then the sinks. Then resume app writes.
-9. **Check.** All four connectors are `RUNNING`, new rows get `db_login` set to the writer's login on the
+6. **Resume the connectors**, sources first, then the sinks. Then resume app writes.
+7. **Check.** All four connectors are `RUNNING`, new rows get `db_login` set to the writer's login on the
    origin and to the sink login on the replica, and the `*.to-pg` / `*.to-mssql` topics carry no events
    whose `db_login` is a sink login.
 
@@ -221,7 +239,7 @@ Changes written before the upgrade have no `db_login`, so the filter lets them t
 echoes, the LWW triggers stop them as before.
 
 To roll back, apply the previous filter with `SQL_FILE=<old file> bash scripts/register-ksqldb.sh --replace`
-and `PUT` the previous sink configs. The `db_login` column and the triggers can stay.
+and register the previous connector configs. The `db_login` column and the triggers can stay.
 
 ## Troubleshooting
 
@@ -232,11 +250,10 @@ and `PUT` the previous sink configs. The `db_login` column and the triggers can 
   `curl -X POST "localhost:8083/connectors/<name>/restart?includeTasks=true"`.
 - **Records go missing.** Sink errors go to the `dlq.bpjsk-replication` topic. The Connect error context
   is in the message headers.
-- **You need to register a connector again.** Delete it first with
-  `curl -X DELETE localhost:8083/connectors/<name>`, then run `register-connectors.sh` again. The ksqlDB
-  step is idempotent.
-- **You changed a ksqlDB filter.** `TERMINATE` the query, `DROP STREAM` the output stream (not the
-  topic), then run `bash scripts/register-ksqldb.sh` again.
+- **You changed a connector config.** Run `register-connectors.sh` (or pass just that file) again. It
+  updates the connector in place. The ksqlDB step is idempotent.
+- **You changed a ksqlDB filter.** Run `bash scripts/register-ksqldb.sh --replace`. Don't `DROP` and
+  re-create the streams: new queries replay all history (see step 4).
 
 ## Stop / reset
 
@@ -253,7 +270,7 @@ After `down -v`, repeat steps 2–4.
 configs/source/      Debezium source connector configs (SQL Server, PostgreSQL)
 configs/sink/        Debezium JDBC sink configs (column renames, routing, DLQ)
 sql/                 Schema, CDC/replication, LWW triggers, FK toggles, ksqlDB loop filter
-scripts/             setup-db.sh, register-connectors.sh, register-ksqldb.sh
+scripts/             env.sh (settings), render-config.sh, setup-db.sh, register-connectors.sh, register-ksqldb.sh
 tests/test_cdc.py    Automated end-to-end test suite
 tests/manual/        Step-by-step manual DML scripts
 Dockerfile.connect   Debezium Connect image with the JDBC sink and scripting plugins

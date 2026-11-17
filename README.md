@@ -184,16 +184,44 @@ any error:
 
 ## Upgrading a stack from the user-ID loop filter
 
-The easiest way is to start over with `docker compose down -v`. To keep the existing data, follow these
-steps in order:
+On a local stack, the easiest way is to start over with `docker compose down -v`. To keep the data (for
+example on staging), follow these steps in order. Point the scripts at the environment first:
+`MSSQL_HOST`, `MSSQL_ADMIN_USER` (default `sa`), `PG_HOST`, `PG_ADMIN_USER`, `CONNECT_URL` and `KSQLDB_URL` (in `.env` or exported).
 
-1. Pause `bpjsk-mssql-source` (`curl -X PUT localhost:8083/connectors/bpjsk-mssql-source/pause`).
-2. Run `bash scripts/setup-db.sh`. It adds `db_login`, updates the triggers, creates the sink logins, and
-   recreates the SQL Server CDC capture instances so that they include the new column.
-3. Run `docker compose up -d kafka-connect` so Connect picks up the `*_SINK_*` variables. Then resume the
-   source.
-4. Run `bash scripts/register-ksqldb.sh --replace`.
-5. Delete the two sinks and register them again from `configs/sink/` so they connect as the sink logins.
+1. **Choose the sink logins.** Set `MSSQL_SINK_USER` / `MSSQL_SINK_PASSWORD` and `PG_SINK_USER` /
+   `PG_SINK_PASSWORD`. No app may connect as these logins.
+2. **Stop app writes and let replication drain.** Recreating a SQL Server capture instance drops its
+   change table, so any change Debezium hasn't read yet is lost. Wait until the consumer lag of the
+   sources, the ksqlDB queries and the sinks is 0.
+3. **Pause all four connectors:**
+   `for c in bpjsk-mssql-source bpjsk-postgres-source bpjsk-postgres-sink bpjsk-mssql-sink; do curl -s -X PUT $CONNECT_URL/connectors/$c/pause; done`
+4. **Run `bash scripts/setup-db.sh`.** It adds `db_login` on both nodes, updates the triggers, creates the
+   sink logins and recreates the SQL Server capture instances (it prints one "Recreating…" line per table).
+5. **Give Kafka Connect the `*_SINK_*` variables** and restart the worker (with this compose file:
+   `docker compose up -d kafka-connect`). The sink configs read them through `${env:...}`. Paused
+   connectors stay paused.
+6. **Update the sink configs in place.** A `PUT` keeps their consumer offsets:
+   ```bash
+   for c in bpjsk-postgres-sink bpjsk-mssql-sink; do
+     jq '.config | with_entries(select(.key | (startswith("TODO(") or startswith("NOTE ")) | not))' configs/sink/$c.json \
+       | curl -s -X PUT -H "Content-Type: application/json" --data @- $CONNECT_URL/connectors/$c/config >/dev/null
+   done
+   ```
+   The sinks stay paused through the `PUT`.
+7. **Run `bash scripts/register-ksqldb.sh --replace`.** It upgrades the six filter queries in place and
+   waits for each one. Afterwards ksqlDB rebalances its stream threads for one to a few minutes, which
+   pauses filtering but loses nothing. Wait until `curl $KSQLDB_URL/healthcheck` reports healthy and the
+   `_confluent-ksql-*` consumer groups have no lag.
+8. **Resume the connectors**, sources first, then the sinks. Then resume app writes.
+9. **Check.** All four connectors are `RUNNING`, new rows get `db_login` set to the writer's login on the
+   origin and to the sink login on the replica, and the `*.to-pg` / `*.to-mssql` topics carry no events
+   whose `db_login` is a sink login.
+
+Changes written before the upgrade have no `db_login`, so the filter lets them through. If they are
+echoes, the LWW triggers stop them as before.
+
+To roll back, apply the previous filter with `SQL_FILE=<old file> bash scripts/register-ksqldb.sh --replace`
+and `PUT` the previous sink configs. The `db_login` column and the triggers can stay.
 
 ## Troubleshooting
 

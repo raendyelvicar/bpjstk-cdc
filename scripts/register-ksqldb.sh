@@ -59,5 +59,28 @@ if $REPLACE; then
   STATEMENTS=$(sed -E 's/CREATE STREAM IF NOT EXISTS ([A-Za-z0-9_]+_to_(pg|mssql))([^A-Za-z0-9_]|$)/CREATE OR REPLACE STREAM \1\3/' <<<"$STATEMENTS")
 fi
 
+# Wait until ksqlDB has executed command $1. A request carrying
+# commandSequenceNumber only runs once every command up to it is done; it gives
+# up after a few seconds, so keep asking. (An in-place upgrade can take a minute.)
+wait_for_command() {
+  for _ in $(seq 150); do
+    jq -n --argjson n "$1" '{ksql: "LIST STREAMS;", commandSequenceNumber: $n}' \
+      | curl -s "${CURL_AUTH[@]}" -X POST -H "Content-Type: application/vnd.ksql.v1+json" --data @- "$KSQL/ksql" \
+      | jq -e 'type == "array"' >/dev/null && return 0
+    sleep 2
+  done
+  echo "ksqlDB did not finish command $1 within 5 minutes" >&2
+  return 1
+}
+
+# One statement at a time, each confirmed before the next, so a slow upgrade
+# can't make later statements time out and leave the filters half applied.
+# Statements end with ';' at the end of a line; '--' comment lines are skipped.
 echo "Applying $SQL_FILE (PG_SINK_USER=$PG_SINK_USER, MSSQL_SINK_USER=$MSSQL_SINK_USER)"
-ksql "$STATEMENTS" | jq -r '.[] | "  " + (.commandStatus.message // ."@type")'
+while IFS= read -r -d '' stmt; do
+  out=$(ksql "$stmt")
+  echo "$out" | jq -r '.[] | "  " + (.commandStatus.message // ."@type")'
+  seq_no=$(echo "$out" | jq -r '[.[] | .commandSequenceNumber // empty] | max // empty')
+  [ -n "$seq_no" ] && [ "$seq_no" -ge 0 ] && wait_for_command "$seq_no"
+done < <(grep -v '^[[:space:]]*--' <<<"$STATEMENTS" \
+           | awk '{ buf = buf $0 "\n" } /;[[:space:]]*$/ { printf "%s%c", buf, 0; buf = "" }')

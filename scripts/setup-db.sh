@@ -8,6 +8,8 @@ set -a; source .env; set +a
 # Override in .env for the remote databases.
 MSSQL_HOST=${MSSQL_HOST:-localhost}
 MSSQL_PORT=${MSSQL_PORT:-1433}
+# SQL Server login that owns bpjsk_poc; needs to enable CDC and create logins (sysadmin).
+MSSQL_ADMIN_USER=${MSSQL_ADMIN_USER:-sa}
 PG_HOST=${PG_HOST:-localhost}
 PG_PORT=${PG_PORT:-5432}
 PG_DB=${PG_DB:-bpjsk_poc}
@@ -27,7 +29,7 @@ else
   SQLCMD=(docker exec -i sqlserver "$(docker exec sqlserver sh -c 'ls /opt/mssql-tools18/bin/sqlcmd 2>/dev/null || ls /opt/mssql-tools/bin/sqlcmd')")
 fi
 run_mssql() {
-  "${SQLCMD[@]}" -S "$MSSQL_HOST,$MSSQL_PORT" -U sa -P "$MSSQL_PASSWORD" -C -I -b "${@:2}" -i /dev/stdin < "$1"
+  "${SQLCMD[@]}" -S "$MSSQL_HOST,$MSSQL_PORT" -U "$MSSQL_ADMIN_USER" -P "$MSSQL_PASSWORD" -C -I -b "${@:2}" -i /dev/stdin < "$1"
 }
 
 # psql: use a local install, else the one in the local postgres container.

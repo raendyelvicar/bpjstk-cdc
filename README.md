@@ -180,7 +180,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install psycopg2-binary pymssql requests kafka-python
 
-python tests/test_cdc.py               # all tests (TC-01 … TC-16), then clean up the test rows
+python tests/test_cdc.py               # all tests (TC-01 … TC-17), then clean up the test rows
 python tests/test_cdc.py TC-01 TC-05   # selected tests only
 python tests/test_cdc.py --keep        # keep the test rows for inspection
 ```
@@ -188,6 +188,19 @@ python tests/test_cdc.py --keep        # keep the test rows for inspection
 The suite tests both replication directions, the loop filter, LWW tie-breaks, stale and dropped updates,
 hard and soft deletes, DLQ routing and NIK changes. Test rows use BPJS numbers that start with `CDCT` and
 NIKs that start with `99`.
+
+**Loopback evidence (TC-17).** TC-17 checks that no change is sent back when both sinks use the same login.
+It reads both sinks' logins from Kafka Connect and the running ksqlDB filters, and it is skipped when the
+sinks use different logins. It then writes one row from SQL Server and then from PostgreSQL, and records
+every event for that row:
+
+- in the four topics (the CDC topics and the filtered `.to-*` topics),
+- in SQL Server's own CDC change table,
+- in the final rows on both sides.
+
+It counts everything twice, 20 seconds apart, because a loop would keep adding events. The report goes to
+`tests/evidence/TC-17-no-loopback-<UTC time>.md`. Run it alone with
+`python tests/test_cdc.py TC-17`. Add `--allow-remote` for development.
 
 ### Manual DML
 

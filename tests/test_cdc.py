@@ -12,6 +12,7 @@ Test rows are marked by BPJSNumber 'CDCT...' and NIK '99...' (99 is not a
 valid province code), which is what the cleanup deletes.
 """
 import datetime as dt
+import json
 import os
 import random
 import sys
@@ -62,6 +63,9 @@ PG_DB = os.getenv("PG_DB", "bpjsk_poc")
 MSSQL_ADMIN_USER = os.getenv("MSSQL_ADMIN_USER", "sa")
 PG_USER = os.getenv("PG_ADMIN_USER", "postgres")
 CONNECT_URL = os.getenv("CONNECT_URL", "http://localhost:8083")
+# Basic auth for the Connect REST API, when it has one (e.g. the shared development worker).
+CONNECT_AUTH = (os.environ["CONNECT_USER"], os.getenv("CONNECT_PWD", "")) if os.getenv("CONNECT_USER") else None
+KSQLDB_AUTH = (os.environ["KSQLDB_USER"], os.getenv("KSQLDB_PASSWORD", "")) if os.getenv("KSQLDB_USER") else None
 KSQLDB_URL = os.getenv("KSQLDB_URL", "http://localhost:8088")
 # TODO(remote-kafka): set KAFKA_BOOTSTRAP to the remote broker's externally advertised listener
 # (plus security_protocol/sasl_* kwargs on KafkaConsumer/KafkaProducer if it uses SASL/SSL).
@@ -324,7 +328,7 @@ def count_events(topic, marker):
 
 def assert_connectors_running():
     for name in CONNECTORS:
-        st = requests.get(f"{CONNECT_URL}/connectors/{name}/status", timeout=10).json()
+        st = requests.get(f"{CONNECT_URL}/connectors/{name}/status", auth=CONNECT_AUTH, timeout=10).json()
         assert "connector" in st, f"{name}: {st}"
         states = [st["connector"]["state"]] + [x["state"] for x in st["tasks"]]
         assert states[1:] and all(s == "RUNNING" for s in states), f"{name} not RUNNING: {states}"
@@ -476,7 +480,7 @@ def tc12():
 
 def tc13():
     # The six ksqlDB filter queries exist and run; all connectors run.
-    r = requests.post(f"{KSQLDB_URL}/ksql", json={"ksql": "SHOW QUERIES;", "streamsProperties": {}},
+    r = requests.post(f"{KSQLDB_URL}/ksql", json={"ksql": "SHOW QUERIES;", "streamsProperties": {}}, auth=KSQLDB_AUTH,
                       headers={"Content-Type": "application/vnd.ksql.v1+json"}, timeout=10).json()
     queries = r[0]["queries"]
     running = {s.upper() for q in queries if q.get("state", "RUNNING") == "RUNNING"
@@ -563,6 +567,154 @@ def tc16():
         cur.close()
 
 
+def topic_events(topic, marker):
+    """Every message in `topic` whose value contains `marker`, in order: offset, op, db_login, name."""
+    if KafkaConsumer is None:
+        raise Skip("kafka-python not installed")
+    cons = KafkaConsumer(topic, bootstrap_servers=KAFKA, auto_offset_reset="earliest",
+                         enable_auto_commit=False, group_id=None, consumer_timeout_ms=8000)
+    out = []
+    for m in cons:
+        v = (m.value or b"").decode("utf-8", "ignore")
+        if marker not in v:
+            continue
+        try:
+            p = json.loads(v)["payload"]
+            row = p.get("after") or p.get("before") or {}
+            out.append({"offset": m.offset, "op": p.get("op"), "db_login": row.get("db_login"),
+                        "name": row.get("full_name", row.get("FullName"))})
+        except (ValueError, KeyError, TypeError, AttributeError):
+            out.append({"offset": m.offset, "op": "?", "db_login": None, "name": v[:60]})
+    cons.close()
+    return out
+
+
+def mssql_cdc_writes(rid):
+    """Writes SQL Server's own CDC change table recorded for a membership (inserts and the
+    after-image of updates), independent of Kafka: (operation, db_login, FullName)."""
+    c = ms.cursor().c
+    c.execute("SELECT CASE __$operation WHEN 2 THEN 'insert' WHEN 4 THEN 'update' END, db_login, FullName "
+              "FROM cdc.dbo_BPJSMembership_CT WHERE MembershipID = %s AND __$operation IN (2, 4) "
+              "ORDER BY __$start_lsn, __$seqval", (rid,))
+    return [tuple(r) for r in c.fetchall()]
+
+
+def tc17():
+    """Same sink login on both databases: a row written on each side replicates once and
+    never comes back. Writes an evidence report to tests/evidence/."""
+    lc = lambda s: (s or "").lower()
+    # Precondition, from the live systems rather than .env: both sinks connect with one login,
+    # and that login is what the running ksqlDB filters drop.
+    cfg = {n: requests.get(f"{CONNECT_URL}/connectors/{n}/config", auth=CONNECT_AUTH, timeout=10).json()
+           for n in ("bpjsk-mssql-sink", "bpjsk-postgres-sink")}
+    logins = {n: c.get("connection.username") for n, c in cfg.items()}
+    if len({lc(v) for v in logins.values()}) != 1:
+        raise Skip(f"the sinks use different logins: {logins}")
+    sink = lc(logins["bpjsk-mssql-sink"])
+    filters = {}
+    for stream in ("PG_MEMBERSHIP_TO_MSSQL", "MSSQL_MEMBERSHIP_TO_PG"):
+        r = requests.post(f"{KSQLDB_URL}/ksql", json={"ksql": f"DESCRIBE {stream} EXTENDED;"}, auth=KSQLDB_AUTH,
+                          headers={"Content-Type": "application/vnd.ksql.v1+json"}, timeout=15).json()
+        stmt = r[0]["sourceDescription"]["statement"]
+        filters[stream] = stmt[stmt.index("WHERE"):].strip()
+        assert "db_login" in stmt and f"'{sink}'" in lc(stmt), f"{stream} does not drop db_login = {sink}: {filters[stream]}"
+
+    me = {"ms": lc(ms.cursor().execute("SELECT ORIGINAL_LOGIN()").fetchone()[0]), "pg": lc(PG_USER)}
+    assert sink not in me.values(), f"the test must not write as the sink login {sink}"
+
+    # Round A: insert + update on SQL Server. Round B: a newer update of the same row on PostgreSQL.
+    t = TABLES["membership"]
+    rid = row_insert("ms", "membership", "ROUND_A_INSERT")
+    replicated("ms", "membership", rid)
+    row_update("ms", "membership", rid, "ROUND_A_UPDATE")
+    stays("membership", rid, "ROUND_A_UPDATE", MS_USER, "round A (SQL Server origin) converges")
+    row_update("pg", "membership", rid, "ROUND_B_UPDATE")
+    stays("membership", rid, "ROUND_B_UPDATE", PG_USER_ID, "round B (PostgreSQL origin) converges")
+    nik = row_fetch("ms", "membership", rid, "nik")[0]
+
+    topics = {"ms_cdc": t["topic_ms"], "ms_to_pg": t["topic_ms"] + ".to-pg",
+              "pg_cdc": t["topic_pg"], "pg_to_ms": t["topic_pg"] + ".to-mssql"}
+    time.sleep(10)  # let any echo surface before the first count
+    ev = {k: topic_events(v, nik) for k, v in topics.items()}
+    ct = mssql_cdc_writes(rid)
+    time.sleep(20)  # a loop keeps producing events; a second count must find the same numbers
+    ev2 = {k: topic_events(v, nik) for k, v in topics.items()}
+    ct2 = mssql_cdc_writes(rid)
+    final = {s: row_fetch(s, "membership", rid, "full_name", "updated_by", "updated_at", "db_login") for s in ("ms", "pg")}
+
+    def summary(events):
+        return [(e["op"], lc(e["db_login"])) for e in events]
+
+    expected = {
+        "ms_cdc": [("c", me["ms"]), ("u", me["ms"]), ("u", sink)],  # 2 app writes + the MSSQL sink's write of round B
+        "ms_to_pg": [("c", me["ms"]), ("u", me["ms"])],              # the sink's write is dropped
+        "pg_cdc": [("c", sink), ("u", sink), ("u", me["pg"])],       # the PG sink's 2 writes + 1 app write
+        "pg_to_ms": [("u", me["pg"])],                               # only the app write goes back
+    }
+    checks = []
+    for k in topics:
+        checks.append((f"{topics[k]}: events are exactly {expected[k]}", summary(ev[k]) == expected[k], summary(ev[k])))
+        checks.append((f"{topics[k]}: unchanged 20 s later (no loop)", len(ev2[k]) == len(ev[k]), f"{len(ev[k])} -> {len(ev2[k])}"))
+    ct_expected = [("insert", me["ms"]), ("update", me["ms"]), ("update", sink)]
+    checks.append(("SQL Server CDC change table: exactly 3 writes, the last by the sink",
+                   [(o, lc(l)) for o, l, _ in ct] == ct_expected, [(o, l) for o, l, _ in ct]))
+    checks.append(("SQL Server CDC change table: unchanged 20 s later (no loop)", ct2 == ct, f"{len(ct)} -> {len(ct2)}"))
+    checks.append(("Final rows match on both sides", final["ms"][:2] == final["pg"][:2], final))
+    checks.append(("db_login: sink login on SQL Server (it replicated round B), app login on PostgreSQL (origin)",
+                   (lc(final["ms"][3]), lc(final["pg"][3])) == (sink, me["pg"]), (final["ms"][3], final["pg"][3])))
+
+    write_evidence(rid, nik, logins, filters, me, topics, ev, ev2, ct, ct2, final, checks)
+    bad = [(name, got) for name, ok, got in checks if not ok]
+    assert not bad, "; ".join(f"{n}: got {g}" for n, g in bad)
+
+
+def write_evidence(rid, nik, logins, filters, me, topics, ev, ev2, ct, ct2, final, checks):
+    now = dt.datetime.now(dt.timezone.utc)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evidence",
+                        f"TC-17-no-loopback-{now:%Y%m%dT%H%M%SZ}.md")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    L = [f"# TC-17 evidence: same sink login on both databases, no loopback", "",
+         f"- Run at: {now:%Y-%m-%d %H:%M:%S} UTC",
+         f"- Environment: APP_ENV={os.getenv('APP_ENV', 'local')}; SQL Server {MSSQL_HOST}:{MSSQL_PORT}, "
+         f"PostgreSQL {PG_HOST}:{PG_PORT}, Connect {CONNECT_URL}, ksqlDB {KSQLDB_URL}",
+         f"- Row: membership_id {rid}, NIK {nik}",
+         f"- Result: {'PASS' if all(ok for _, ok, _ in checks) else 'FAIL'} "
+         f"({sum(ok for _, ok, _ in checks)}/{len(checks)} checks)", "",
+         "## 1. Both sinks use the same login (read from Kafka Connect)", "",
+         "| Connector | connection.username |", "| --- | --- |"]
+    L += [f"| {n} | `{u}` |" for n, u in logins.items()]
+    L += ["", "The test wrote as `" + me["ms"] + "` on SQL Server and `" + me["pg"] + "` on PostgreSQL.", "",
+          "## 2. The running ksqlDB filters drop that login", ""]
+    for s, w in filters.items():
+        L += [f"`{s}`:", "", "```sql", w, "```", ""]
+    L += ["## 3. Scenario", "",
+          "1. Round A, SQL Server origin: insert (`ROUND_A_INSERT`), then update (`ROUND_A_UPDATE`).",
+          "2. Round B, PostgreSQL origin: a newer update of the same row (`ROUND_B_UPDATE`).",
+          "3. Wait 10 s, count every hop; wait 20 s more, count again. A loop would keep adding events.", "",
+          "## 4. Every event for this row, per topic", "",
+          "| Topic | Offset | op | db_login | name |", "| --- | --- | --- | --- | --- |"]
+    for k, topic in topics.items():
+        if not ev[k]:
+            L.append(f"| {topic} | (none) | | | |")
+        for e in ev[k]:
+            L.append(f"| {topic} | {e['offset']} | {e['op']} | `{e['db_login']}` | {e['name']} |")
+    L += ["", "| Topic | Events at first count | Events 20 s later |", "| --- | --- | --- |"]
+    L += [f"| {topics[k]} | {len(ev[k])} | {len(ev2[k])} |" for k in topics]
+    L += ["", "Reading it: each sink write appears in its database's CDC topic with `db_login` = the sink login, "
+          "and the matching `.to-*` topic does not carry it, so it never travels back.", "",
+          "## 5. SQL Server's own CDC change table (independent of Kafka)", "",
+          "| # | Operation | db_login | FullName |", "| --- | --- | --- | --- |"]
+    L += [f"| {i + 1} | {o} | `{l}` | {n} |" for i, (o, l, n) in enumerate(ct)]
+    L += ["", f"Rows 20 s later: {len(ct2)} (first count {len(ct)}).", "",
+          "## 6. Final rows", "", "| Node | full_name | updated_by | updated_at | db_login |", "| --- | --- | --- | --- | --- |"]
+    L += [f"| {s} | {r[0]} | {r[1]} | {r[2]} | `{r[3]}` |" for s, r in final.items()]
+    L += ["", "## 7. Checks", "", "| Check | Result | Observed |", "| --- | --- | --- |"]
+    L += [f"| {n} | {'PASS' if ok else 'FAIL'} | {str(got).replace('|', '/')} |" for n, ok, got in checks]
+    with open(path, "w") as f:
+        f.write("\n".join(L) + "\n")
+    print(f"    evidence: {path}", flush=True)
+
+
 # ---------- cleanup ----------
 def cleanup():
     """Delete the test rows on both nodes (children first)."""
@@ -600,6 +752,7 @@ TESTS = [
     ("TC-14 NIK (unique) change", tc14),
     ("TC-15 Loop filter by db_login", tc15),
     ("TC-16 Failed insert keeps IDENTITY", tc16),
+    ("TC-17 Same sink login, no loopback", tc17),
 ]
 
 if __name__ == "__main__":

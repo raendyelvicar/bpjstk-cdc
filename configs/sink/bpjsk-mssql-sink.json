@@ -5,8 +5,8 @@
         "tasks.max": "2",
         "topics": "pg-bpjsk-cdc.public.bpjs_claim.to-mssql,pg-bpjsk-cdc.public.bpjs_membership.to-mssql,pg-bpjsk-cdc.public.bpjs_monthly_contribution.to-mssql",
         "connection.url": "jdbc:sqlserver://sqlserver:1433;databaseName=bpjsk_poc;encrypt=false",
-        "connection.username": "sa",
-        "connection.password": "${env:MSSQL_PASSWORD}",
+        "connection.username": "${env:MSSQL_SINK_USER}",
+        "connection.password": "${env:MSSQL_SINK_PASSWORD}",
         "insert.mode": "upsert",
         "primary.key.mode": "record_key",
         "delete.enabled": "true",
@@ -19,9 +19,11 @@
         "errors.deadletterqueue.topic.name": "dlq.bpjsk-replication",
         "errors.deadletterqueue.topic.replication.factor": "1",
         "errors.deadletterqueue.context.headers.enable": "true",
-        "transforms": "unwrap,routeClaim,routeMembership,routeContribution,renameClaimValue,renameClaimKey,renameMembershipValue,renameMembershipKey,renameContributionValue,renameContributionKey",
+        "transforms": "unwrap,dropLogin,routeClaim,routeMembership,routeContribution,renameClaimValue,renameClaimKey,renameMembershipValue,renameMembershipKey,renameContributionValue,renameContributionKey",
         "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
         "transforms.unwrap.delete.tombstone.handling.mode": "tombstone",
+        "transforms.dropLogin.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+        "transforms.dropLogin.exclude": "db_login",
         "transforms.routeClaim.type": "org.apache.kafka.connect.transforms.RegexRouter",
         "transforms.routeClaim.regex": "pg-bpjsk-cdc\\.public\\.bpjs_claim\\.to-mssql",
         "transforms.routeClaim.replacement": "BPJSClaim",
@@ -61,6 +63,7 @@
         "key.converter.schemas.enable": "true",
         "value.converter": "org.apache.kafka.connect.json.JsonConverter",
         "value.converter.schemas.enable": "true",
-        "NOTE transforms.unwrap.delete.tombstone.handling.mode": "Deletes reach the sink as a minimal delete envelope (no columns) that ksqlDB (sql/ksqldb-01-loop-filter.sql) writes in place of each delete event; \"tombstone\" mode flattens it to a null value with an empty schema, which the sink runs as DELETE by key. Real tombstones would be DROPPED by this mode (silently, no DLQ), and the original delete envelope would make the sink try to ALTER the table and retry forever. Same on Debezium 2.5.4, 2.6.2 and 3.6.3."
+        "NOTE transforms.unwrap.delete.tombstone.handling.mode": "Deletes reach the sink as a minimal delete envelope (no columns) that ksqlDB (sql/ksqldb-01-loop-filter.sql) writes in place of each delete event; \"tombstone\" mode flattens it to a null value with an empty schema, which the sink runs as DELETE by key. Real tombstones would be DROPPED by this mode (silently, no DLQ), and the original delete envelope would make the sink try to ALTER the table and retry forever. Same on Debezium 2.5.4, 2.6.2 and 3.6.3.",
+        "NOTE connection.username": "Dedicated sink login (cdc_sink by default, created by scripts/setup-db.sh). The LWW triggers stamp db_login with the connecting login on every write, and the ksqlDB loop filter drops changes whose db_login is this login, so rows the sink writes are not sent back. Never use the admin login here. dropLogin keeps the origin's db_login off the wire; the target's trigger sets its own."
     }
 }

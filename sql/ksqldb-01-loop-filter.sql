@@ -4,15 +4,20 @@
 --   pg-bpjsk-cdc.public.<t>            -> <stream> -> pg-bpjsk-cdc.public.<t>.to-mssql         -> bpjsk-mssql-sink
 --   mssql-bpjsk-cdc.bpjsk_poc.dbo.<T> -> <stream> -> mssql-bpjsk-cdc.bpjsk_poc.dbo.<T>.to-pg -> bpjsk-postgres-sink
 --
--- Origin of a change = after.updated_by, else after.created_by.
--- EXTRACTJSONFIELD returns the string 'null' for a JSON null (Debezium sends
--- every column, so an insert has "updated_by": null), hence the NULLIF.
--- SQL Server users are < 1000000, PostgreSQL users >= 1000000.
--- Each output keeps only the changes that originated on the source side, so a
--- row a sink just wrote is not sent back to where it came from.
--- Records with no origin pass through: deletes (after = null), rows with
--- neither column set, and non-JSON records (so the sink still sends them to
--- its DLQ). The LWW triggers stop any echo that gets through.
+-- Origin of a change = the database login that wrote it, after.db_login. Each
+-- node's triggers stamp it on every insert and update (ORIGINAL_LOGIN() on SQL
+-- Server, session_user on PostgreSQL), and each JDBC sink connects with its own
+-- login, so a change whose db_login is the sink login of that node is a row the
+-- sink just replicated there: it is dropped instead of being sent back. The
+-- sink logins come in as ksqlDB variables from scripts/register-ksqldb.sh:
+--   ${PG_SINK_USER}     the bpjsk-postgres-sink login (PG_SINK_USER, default cdc_sink)
+--   ${MSSQL_SINK_USER}  the bpjsk-mssql-sink login (MSSQL_SINK_USER, default cdc_sink)
+-- Compared case-insensitively. EXTRACTJSONFIELD returns the string 'null' for a
+-- JSON null, hence the NULLIF.
+-- Records with no db_login pass through: deletes (after = null; a replicated
+-- delete finds no row on the origin and writes no change, so it stops there),
+-- rows written before db_login existed, and non-JSON records (so the sink still
+-- sends them to its DLQ). The LWW triggers stop any echo that gets through.
 -- The CASE keeps EXTRACTJSONFIELD away from non-JSON values: it throws on
 -- them, and an error in a WHERE clause drops the row (in a SELECT list the
 -- same error only becomes NULL).
@@ -40,8 +45,12 @@
 -- the record as a truncate and drops it.
 --
 -- Applied by scripts/register-ksqldb.sh. Every statement is IF NOT EXISTS, so
--- re-running is safe. To change a filter: TERMINATE the query, DROP STREAM the
--- output stream (not the topic), then re-run.
+-- re-running is safe. To change a filter: scripts/register-ksqldb.sh --replace,
+-- which runs the output streams as CREATE OR REPLACE, an in-place upgrade that
+-- keeps each query's consumer offsets. Don't DROP and re-create them instead:
+-- new queries re-read the CDC topics from the start, and with the foreign keys
+-- on, a replayed child row can reach a sink before its parent, which fails the
+-- sink task.
 
 -- ---------------------------------------------------------------- PG -> MSSQL
 CREATE STREAM IF NOT EXISTS pg_claim_raw (k STRING KEY, v STRING)
@@ -50,8 +59,8 @@ CREATE STREAM IF NOT EXISTS pg_claim_to_mssql
   WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_claim.to-mssql', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA') AS
   SELECT k, CASE WHEN v LIKE '{%' THEN CASE WHEN EXTRACTJSONFIELD(v, '$.payload.op') = 'd' THEN '{"schema":{"type":"struct","name":"bpjsk.delete.Envelope","optional":false,"fields":[{"type":"struct","optional":true,"field":"before","fields":[]},{"type":"struct","optional":true,"field":"after","fields":[]},{"type":"string","optional":false,"field":"op"}]},"payload":{"before":{},"after":null,"op":"d"}}' ELSE v END ELSE v END AS v
   FROM pg_claim_raw
-  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(CAST(COALESCE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.updated_by'), 'null'),
-                               NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.created_by'), 'null')) AS BIGINT), CAST(1000000 AS BIGINT)) >= 1000000 ELSE true END;
+  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(LCASE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.db_login'), 'null')), '')
+                               <> LCASE('${PG_SINK_USER}') ELSE true END;
 
 CREATE STREAM IF NOT EXISTS pg_membership_raw (k STRING KEY, v STRING)
   WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_membership', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');
@@ -59,8 +68,8 @@ CREATE STREAM IF NOT EXISTS pg_membership_to_mssql
   WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_membership.to-mssql', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA') AS
   SELECT k, CASE WHEN v LIKE '{%' THEN CASE WHEN EXTRACTJSONFIELD(v, '$.payload.op') = 'd' THEN '{"schema":{"type":"struct","name":"bpjsk.delete.Envelope","optional":false,"fields":[{"type":"struct","optional":true,"field":"before","fields":[]},{"type":"struct","optional":true,"field":"after","fields":[]},{"type":"string","optional":false,"field":"op"}]},"payload":{"before":{},"after":null,"op":"d"}}' ELSE v END ELSE v END AS v
   FROM pg_membership_raw
-  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(CAST(COALESCE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.updated_by'), 'null'),
-                               NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.created_by'), 'null')) AS BIGINT), CAST(1000000 AS BIGINT)) >= 1000000 ELSE true END;
+  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(LCASE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.db_login'), 'null')), '')
+                               <> LCASE('${PG_SINK_USER}') ELSE true END;
 
 CREATE STREAM IF NOT EXISTS pg_contribution_raw (k STRING KEY, v STRING)
   WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_monthly_contribution', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');
@@ -68,8 +77,8 @@ CREATE STREAM IF NOT EXISTS pg_contribution_to_mssql
   WITH (KAFKA_TOPIC='pg-bpjsk-cdc.public.bpjs_monthly_contribution.to-mssql', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA') AS
   SELECT k, CASE WHEN v LIKE '{%' THEN CASE WHEN EXTRACTJSONFIELD(v, '$.payload.op') = 'd' THEN '{"schema":{"type":"struct","name":"bpjsk.delete.Envelope","optional":false,"fields":[{"type":"struct","optional":true,"field":"before","fields":[]},{"type":"struct","optional":true,"field":"after","fields":[]},{"type":"string","optional":false,"field":"op"}]},"payload":{"before":{},"after":null,"op":"d"}}' ELSE v END ELSE v END AS v
   FROM pg_contribution_raw
-  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(CAST(COALESCE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.updated_by'), 'null'),
-                               NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.created_by'), 'null')) AS BIGINT), CAST(1000000 AS BIGINT)) >= 1000000 ELSE true END;
+  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(LCASE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.db_login'), 'null')), '')
+                               <> LCASE('${PG_SINK_USER}') ELSE true END;
 
 -- ---------------------------------------------------------------- MSSQL -> PG
 CREATE STREAM IF NOT EXISTS mssql_claim_raw (k STRING KEY, v STRING)
@@ -78,8 +87,8 @@ CREATE STREAM IF NOT EXISTS mssql_claim_to_pg
   WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSClaim.to-pg', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA') AS
   SELECT k, CASE WHEN v LIKE '{%' THEN CASE WHEN EXTRACTJSONFIELD(v, '$.payload.op') = 'd' THEN '{"schema":{"type":"struct","name":"bpjsk.delete.Envelope","optional":false,"fields":[{"type":"struct","optional":true,"field":"before","fields":[]},{"type":"struct","optional":true,"field":"after","fields":[]},{"type":"string","optional":false,"field":"op"}]},"payload":{"before":{},"after":null,"op":"d"}}' ELSE v END ELSE v END AS v
   FROM mssql_claim_raw
-  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(CAST(COALESCE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.updated_by'), 'null'),
-                               NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.created_by'), 'null')) AS BIGINT), CAST(0 AS BIGINT)) < 1000000 ELSE true END;
+  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(LCASE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.db_login'), 'null')), '')
+                               <> LCASE('${MSSQL_SINK_USER}') ELSE true END;
 
 CREATE STREAM IF NOT EXISTS mssql_membership_raw (k STRING KEY, v STRING)
   WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMembership', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');
@@ -87,8 +96,8 @@ CREATE STREAM IF NOT EXISTS mssql_membership_to_pg
   WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMembership.to-pg', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA') AS
   SELECT k, CASE WHEN v LIKE '{%' THEN CASE WHEN EXTRACTJSONFIELD(v, '$.payload.op') = 'd' THEN '{"schema":{"type":"struct","name":"bpjsk.delete.Envelope","optional":false,"fields":[{"type":"struct","optional":true,"field":"before","fields":[]},{"type":"struct","optional":true,"field":"after","fields":[]},{"type":"string","optional":false,"field":"op"}]},"payload":{"before":{},"after":null,"op":"d"}}' ELSE v END ELSE v END AS v
   FROM mssql_membership_raw
-  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(CAST(COALESCE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.updated_by'), 'null'),
-                               NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.created_by'), 'null')) AS BIGINT), CAST(0 AS BIGINT)) < 1000000 ELSE true END;
+  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(LCASE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.db_login'), 'null')), '')
+                               <> LCASE('${MSSQL_SINK_USER}') ELSE true END;
 
 CREATE STREAM IF NOT EXISTS mssql_contribution_raw (k STRING KEY, v STRING)
   WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMonthlyContribution', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA');
@@ -96,5 +105,5 @@ CREATE STREAM IF NOT EXISTS mssql_contribution_to_pg
   WITH (KAFKA_TOPIC='mssql-bpjsk-cdc.bpjsk_poc.dbo.BPJSMonthlyContribution.to-pg', KEY_FORMAT='KAFKA', VALUE_FORMAT='KAFKA') AS
   SELECT k, CASE WHEN v LIKE '{%' THEN CASE WHEN EXTRACTJSONFIELD(v, '$.payload.op') = 'd' THEN '{"schema":{"type":"struct","name":"bpjsk.delete.Envelope","optional":false,"fields":[{"type":"struct","optional":true,"field":"before","fields":[]},{"type":"struct","optional":true,"field":"after","fields":[]},{"type":"string","optional":false,"field":"op"}]},"payload":{"before":{},"after":null,"op":"d"}}' ELSE v END ELSE v END AS v
   FROM mssql_contribution_raw
-  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(CAST(COALESCE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.updated_by'), 'null'),
-                               NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.created_by'), 'null')) AS BIGINT), CAST(0 AS BIGINT)) < 1000000 ELSE true END;
+  WHERE CASE WHEN v LIKE '{%' THEN COALESCE(LCASE(NULLIF(EXTRACTJSONFIELD(v, '$.payload.after.db_login'), 'null')), '')
+                               <> LCASE('${MSSQL_SINK_USER}') ELSE true END;

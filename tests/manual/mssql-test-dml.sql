@@ -2,8 +2,9 @@
 -- and check PostgreSQL (and the Kafka topics) before the next step.
 --
 -- Writer rules (see sql/mssql-03-lww-trigger.sql):
---   * created_by / updated_by: SQL Server users < 1000000 (here 101), or the
---     ksqlDB loop filter drops the change and it never reaches PostgreSQL.
+--   * don't run this as the sink login (MSSQL_SINK_USER, default cdc_sink), or the
+--     ksqlDB loop filter drops the change and it never reaches PostgreSQL. The
+--     triggers record the login that wrote each row in db_login.
 --   * every UPDATE must set a newer updated_at, or the LWW trigger skips it.
 --   * timestamps in UTC (SYSUTCDATETIME()).
 --   * leave the ID columns out: the INSTEAD OF trigger lets IDENTITY generate

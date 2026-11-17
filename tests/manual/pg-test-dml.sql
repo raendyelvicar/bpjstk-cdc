@@ -2,8 +2,9 @@
 -- and check SQL Server (and the Kafka topics) before the next step.
 --
 -- Writer rules (see sql/postgres-03-lww-trigger.sql):
---   * created_by / updated_by: PostgreSQL users >= 1000000 (here 1000101), or the
---     ksqlDB loop filter drops the change and it never reaches SQL Server.
+--   * don't run this as the sink login (PG_SINK_USER, default cdc_sink), or the
+--     ksqlDB loop filter drops the change and it never reaches SQL Server. The
+--     triggers record the login that wrote each row in db_login.
 --   * every UPDATE must set a newer updated_at, or the LWW trigger skips it.
 -- Test rows: BPJS number CDCT1..., NIK 991..., claim number CDCT-PG-...
 -- (tests/test_cdc.py cleanup also deletes CDCT rows).

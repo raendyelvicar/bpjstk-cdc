@@ -10,8 +10,11 @@ PostgreSQL ──(Debezium source)──► pg-bpjsk-cdc.*     ──(ksqlDB loo
 ```
 
 - **Loop filter** ([sql/ksqldb-01-loop-filter.sql](sql/ksqldb-01-loop-filter.sql)): a change only goes to the
-  other side if it started on this side. The origin comes from `updated_by` / `created_by`:
-  SQL Server users are `< 1000000`, PostgreSQL users are `>= 1000000`.
+  other side if it started on this side. The origin is the **database login that wrote the row**, not
+  any user ID in the data: on every insert and update the triggers stamp the connecting login into a
+  `db_login` column (`ORIGINAL_LOGIN()` on SQL Server, `session_user` on PostgreSQL). Each JDBC sink
+  connects with its own login (`cdc_sink` by default), so a change whose `db_login` is that node's sink
+  login is a replicated row and is dropped. `db_login` itself is never replicated.
 - **Last-writer-wins triggers** (`sql/*-03-lww-trigger.sql`): on each node, an update is applied only if
   it has a newer `updated_at`. If the timestamps are equal, the higher user ID wins. A replicated echo
   loses this check, so it writes no new change and the loop stops.
@@ -40,6 +43,16 @@ Set both passwords in `.env`:
 ```dotenv
 MSSQL_PASSWORD=YourStr0ng!Passw0rd   # SQL Server `sa` password. It must meet SQL Server's complexity rules
 PG_PASSWORD=postgres_password        # `postgres` superuser and `debezium_replication` user
+```
+
+Optionally, set the logins the sinks write with. Both default to `cdc_sink`, and their passwords default
+to the two passwords above. Passwords must not contain a single quote:
+
+```dotenv
+MSSQL_SINK_USER=cdc_sink
+MSSQL_SINK_PASSWORD=...
+PG_SINK_USER=cdc_sink
+PG_SINK_PASSWORD=...
 ```
 
 The defaults (`localhost`, ports 1433 and 5432, database `bpjsk_poc`) work with the local Docker stack, so
@@ -82,11 +95,13 @@ This script runs these files in order:
 
 - SQL Server: [mssql-01-schema.sql](sql/mssql-01-schema.sql) creates the `bpjsk_poc` database and tables,
   [mssql-02-enable-cdc.sql](sql/mssql-02-enable-cdc.sql) enables CDC, and
-  [mssql-03-lww-trigger.sql](sql/mssql-03-lww-trigger.sql) adds the LWW triggers.
+  [mssql-03-lww-trigger.sql](sql/mssql-03-lww-trigger.sql) adds the LWW triggers (they also stamp
+  `db_login`), and [mssql-05-sink-login.sql](sql/mssql-05-sink-login.sql) creates the sink login.
 - PostgreSQL: [postgres-01-schema.sql](sql/postgres-01-schema.sql) creates the tables,
   [postgres-02-replication.sql](sql/postgres-02-replication.sql) creates the `debezium_replication` role,
-  the publication and the sequence offsets, and [postgres-03-lww-trigger.sql](sql/postgres-03-lww-trigger.sql)
-  adds the LWW triggers.
+  the publication and the sequence offsets, [postgres-03-lww-trigger.sql](sql/postgres-03-lww-trigger.sql)
+  adds the LWW and `db_login` triggers, and [postgres-05-sink-role.sql](sql/postgres-05-sink-role.sql)
+  creates the sink role.
 
 You can run all of these scripts again safely.
 
@@ -115,6 +130,11 @@ This script runs the steps in this order:
    the `*.to-pg` and `*.to-mssql` topics.
 3. Registers the two JDBC sinks, which read those topics.
 
+After you change the filter, apply it with `bash scripts/register-ksqldb.sh --replace`. This command
+upgrades the running queries in place (`CREATE OR REPLACE`), so they keep their offsets and don't re-read
+the CDC topics. Don't drop and re-create the streams. Re-created queries replay all history, and with the
+foreign keys on, a replayed child row can fail the sink.
+
 Check that everything is running:
 
 ```bash
@@ -134,7 +154,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install psycopg2-binary pymssql requests kafka-python
 
-python tests/test_cdc.py               # all tests (TC-01 … TC-14), then clean up the test rows
+python tests/test_cdc.py               # all tests (TC-01 … TC-16), then clean up the test rows
 python tests/test_cdc.py TC-01 TC-05   # selected tests only
 python tests/test_cdc.py --keep        # keep the test rows for inspection
 ```
@@ -154,11 +174,26 @@ the other database.
 Every writer, whether an app or a person, must follow these rules. Otherwise changes are dropped without
 any error:
 
-- Set `created_by` / `updated_by` from the correct ID range: SQL Server users `< 1000000`, PostgreSQL
-  users `>= 1000000`. The loop filter uses these to decide where a change came from.
+- Never connect as a sink login (`MSSQL_SINK_USER` / `PG_SINK_USER`). The loop filter treats every change
+  made by those logins as a replicated echo, so it never sends them to the other node. Apps and people
+  can use any other login. `created_by` / `updated_by` can be any user ID, because they are only used to
+  break LWW ties.
 - Every `UPDATE`, including soft deletes, must set a **newer** `updated_at` and set `updated_by`.
   Otherwise the LWW trigger skips the update.
 - Use UTC timestamps.
+
+## Upgrading a stack from the user-ID loop filter
+
+The easiest way is to start over with `docker compose down -v`. To keep the existing data, follow these
+steps in order:
+
+1. Pause `bpjsk-mssql-source` (`curl -X PUT localhost:8083/connectors/bpjsk-mssql-source/pause`).
+2. Run `bash scripts/setup-db.sh`. It adds `db_login`, updates the triggers, creates the sink logins, and
+   recreates the SQL Server CDC capture instances so that they include the new column.
+3. Run `docker compose up -d kafka-connect` so Connect picks up the `*_SINK_*` variables. Then resume the
+   source.
+4. Run `bash scripts/register-ksqldb.sh --replace`.
+5. Delete the two sinks and register them again from `configs/sink/` so they connect as the sink logins.
 
 ## Troubleshooting
 

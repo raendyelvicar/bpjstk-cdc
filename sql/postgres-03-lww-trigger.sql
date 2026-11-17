@@ -11,8 +11,9 @@
 -- Rules for writers (apps and people):
 --   * Every UPDATE (soft deletes too) must set updated_at to a NEWER value and
 --     set updated_by. An update that leaves updated_at unchanged is dropped.
---   * updated_by / created_by: SQL Server users < 1000000, PostgreSQL users
---     >= 1000000. The sinks' loop filter relies on this split.
+--   * Don't connect as the sink role (PG_SINK_USER, default cdc_sink): the
+--     loop filter treats every row it writes as a replicated echo and never
+--     sends it to SQL Server.
 --
 -- All three tables share the same audit columns, so one function serves all.
 CREATE OR REPLACE FUNCTION public.bpjs_lww() RETURNS trigger
@@ -42,3 +43,32 @@ CREATE OR REPLACE TRIGGER bpjs_monthly_contribution_lww
 CREATE OR REPLACE TRIGGER bpjs_claim_lww
     BEFORE UPDATE ON public.bpjs_claim
     FOR EACH ROW EXECUTE FUNCTION public.bpjs_lww();
+
+-- db_login: the login that wrote the row, set on every insert and update from
+-- session_user (the role the connection logged in as; unlike current_user it
+-- doesn't change inside SECURITY DEFINER functions or SET ROLE). Whatever the
+-- writer put in the column is overwritten. Debezium reports it in each change,
+-- and the ksqlDB loop filter drops the changes whose db_login is the sink's
+-- role, i.e. the ones the sink just replicated here. Keep in step with
+-- ORIGINAL_LOGIN() in mssql-03-lww-trigger.sql.
+-- BEFORE triggers fire in name order, so *_db_login runs before *_lww; an
+-- update that loses LWW is still skipped.
+CREATE OR REPLACE FUNCTION public.bpjs_db_login() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.db_login := session_user;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER bpjs_membership_db_login
+    BEFORE INSERT OR UPDATE ON public.bpjs_membership
+    FOR EACH ROW EXECUTE FUNCTION public.bpjs_db_login();
+
+CREATE OR REPLACE TRIGGER bpjs_monthly_contribution_db_login
+    BEFORE INSERT OR UPDATE ON public.bpjs_monthly_contribution
+    FOR EACH ROW EXECUTE FUNCTION public.bpjs_db_login();
+
+CREATE OR REPLACE TRIGGER bpjs_claim_db_login
+    BEFORE INSERT OR UPDATE ON public.bpjs_claim
+    FOR EACH ROW EXECUTE FUNCTION public.bpjs_db_login();

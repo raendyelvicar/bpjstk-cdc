@@ -54,6 +54,12 @@ services:
       CONNECT_CONFIG_PROVIDERS_ENV_CLASS: 'org.apache.kafka.common.config.provider.EnvVarConfigProvider'
       MSSQL_PASSWORD: ${MSSQL_PASSWORD:?set MSSQL_PASSWORD in .env}
       PG_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+      # Logins the JDBC sinks write with (created by scripts/setup-db.sh, same
+      # defaults). The ksqlDB loop filter drops every change these logins make.
+      MSSQL_SINK_USER: ${MSSQL_SINK_USER:-cdc_sink}
+      MSSQL_SINK_PASSWORD: ${MSSQL_SINK_PASSWORD:-${MSSQL_PASSWORD}}
+      PG_SINK_USER: ${PG_SINK_USER:-cdc_sink}
+      PG_SINK_PASSWORD: ${PG_SINK_PASSWORD:-${PG_PASSWORD}}
     # TODO(remote-kafka): drop 'kafka' here once the local broker is removed.
     # TODO(verify): sqlserver/postgres are also remote now (*.kodehive.id), so these
     # two dependencies - and the local sqlserver/postgres services - may be unneeded.

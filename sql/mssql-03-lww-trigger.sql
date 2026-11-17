@@ -21,9 +21,14 @@ GO
 --   * Write timestamps in UTC (SYSUTCDATETIME()). PostgreSQL stores
 --     timestamptz and replicated values are treated as UTC. Note that the
 --     CreatedAt default is GETDATE() (server local time).
---   * updated_by / created_by: SQL Server users < 1000000, PostgreSQL users
---     >= 1000000. The sinks' loop filter relies on this split.
+--   * Don't connect as the sink login (MSSQL_SINK_USER, default cdc_sink):
+--     the loop filter treats every row it writes as a replicated echo and
+--     never sends it to PostgreSQL.
 --
+-- db_login: every row this trigger writes gets db_login = ORIGINAL_LOGIN(),
+-- the login of the connection (whatever the writer put in the column is
+-- ignored). CDC records it, and the ksqlDB loop filter drops the changes whose
+-- db_login is the sink's login, i.e. the ones the sink just replicated here.
 -- Covers INSERT too because the sink's MERGE has both branches, and SQL Server
 -- requires INSTEAD OF triggers for every action in a MERGE if any has one.
 -- TotalAmount is computed, so it is never written.
@@ -54,8 +59,8 @@ BEGIN
                WHERE ISNULL(i.MembershipID, 0) = 0
                  AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.MembershipID = i.MembershipID))
         INSERT INTO dbo.BPJSMembership
-            (EmployeeID, BPJSNumber, NIK, FullName, EnrollmentDate, WorkRiskGroup, IsActive, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at)
-        SELECT i.EmployeeID, i.BPJSNumber, i.NIK, i.FullName, i.EnrollmentDate, i.WorkRiskGroup, i.IsActive, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at
+            (EmployeeID, BPJSNumber, NIK, FullName, EnrollmentDate, WorkRiskGroup, IsActive, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at, db_login)
+        SELECT i.EmployeeID, i.BPJSNumber, i.NIK, i.FullName, i.EnrollmentDate, i.WorkRiskGroup, i.IsActive, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at, ORIGINAL_LOGIN()
         FROM inserted i
         WHERE ISNULL(i.MembershipID, 0) = 0
           AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.MembershipID = i.MembershipID);
@@ -71,14 +76,26 @@ BEGIN
         DECLARE @ident NUMERIC(38, 0);
         SELECT TOP (0) @ident = 0 FROM dbo.BPJSMembership WITH (TABLOCKX, HOLDLOCK);
         SET @ident = IDENT_CURRENT('dbo.BPJSMembership');
-        SET IDENTITY_INSERT dbo.BPJSMembership ON;
-        INSERT INTO dbo.BPJSMembership
-            (MembershipID, EmployeeID, BPJSNumber, NIK, FullName, EnrollmentDate, WorkRiskGroup, IsActive, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at)
-        SELECT i.MembershipID, i.EmployeeID, i.BPJSNumber, i.NIK, i.FullName, i.EnrollmentDate, i.WorkRiskGroup, i.IsActive, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at
-        FROM inserted i
-        WHERE ISNULL(i.MembershipID, 0) <> 0
-          AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.MembershipID = i.MembershipID);
-        SET IDENTITY_INSERT dbo.BPJSMembership OFF;
+        BEGIN TRY
+            SET IDENTITY_INSERT dbo.BPJSMembership ON;
+            INSERT INTO dbo.BPJSMembership
+                (MembershipID, EmployeeID, BPJSNumber, NIK, FullName, EnrollmentDate, WorkRiskGroup, IsActive, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at, db_login)
+            SELECT i.MembershipID, i.EmployeeID, i.BPJSNumber, i.NIK, i.FullName, i.EnrollmentDate, i.WorkRiskGroup, i.IsActive, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at, ORIGINAL_LOGIN()
+            FROM inserted i
+            WHERE ISNULL(i.MembershipID, 0) <> 0
+              AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.MembershipID = i.MembershipID);
+            SET IDENTITY_INSERT dbo.BPJSMembership OFF;
+        END TRY
+        BEGIN CATCH
+            -- The failed insert (e.g. a foreign key error) has already moved
+            -- IDENTITY, and a rollback doesn't move it back. The error dooms the
+            -- transaction, so roll back first, then reseed (that commits on its
+            -- own), then re-raise so the writer still sees the original error.
+            IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+            IF IDENT_CURRENT('dbo.BPJSMembership') <> @ident
+                DBCC CHECKIDENT ('dbo.BPJSMembership', RESEED, @ident) WITH NO_INFOMSGS;
+            THROW;
+        END CATCH;
         IF IDENT_CURRENT('dbo.BPJSMembership') <> @ident
             DBCC CHECKIDENT ('dbo.BPJSMembership', RESEED, @ident) WITH NO_INFOMSGS;
     END;
@@ -111,7 +128,8 @@ BEGIN
         updated_by         = i.updated_by,
         updated_at         = i.updated_at,
         deleted_by         = i.deleted_by,
-        deleted_at         = i.deleted_at
+        deleted_at         = i.deleted_at,
+        db_login           = ORIGINAL_LOGIN()
     FROM dbo.BPJSMembership t
     JOIN inserted i ON i.MembershipID = t.MembershipID
     JOIN @win     w ON w.id = t.MembershipID AND w.uniq_changed = 0;
@@ -137,7 +155,8 @@ BEGIN
             updated_by         = i.updated_by,
             updated_at         = i.updated_at,
             deleted_by         = i.deleted_by,
-            deleted_at         = i.deleted_at
+            deleted_at         = i.deleted_at,
+            db_login           = ORIGINAL_LOGIN()
         FROM dbo.BPJSMembership t
         JOIN inserted i ON i.MembershipID = t.MembershipID
         WHERE t.MembershipID = @id;
@@ -165,8 +184,8 @@ BEGIN
                WHERE ISNULL(i.ContributionID, 0) = 0
                  AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ContributionID = i.ContributionID))
         INSERT INTO dbo.BPJSMonthlyContribution
-            (MembershipID, PeriodMonth, PeriodYear, BaseWage, JHTEmployee, JHTEmployer, JKKEmployer, JKMEmployer, JPEmployee, JPEmployer, PaymentStatus, PaidAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at)
-        SELECT i.MembershipID, i.PeriodMonth, i.PeriodYear, i.BaseWage, i.JHTEmployee, i.JHTEmployer, i.JKKEmployer, i.JKMEmployer, i.JPEmployee, i.JPEmployer, i.PaymentStatus, i.PaidAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at
+            (MembershipID, PeriodMonth, PeriodYear, BaseWage, JHTEmployee, JHTEmployer, JKKEmployer, JKMEmployer, JPEmployee, JPEmployer, PaymentStatus, PaidAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at, db_login)
+        SELECT i.MembershipID, i.PeriodMonth, i.PeriodYear, i.BaseWage, i.JHTEmployee, i.JHTEmployer, i.JKKEmployer, i.JKMEmployer, i.JPEmployee, i.JPEmployer, i.PaymentStatus, i.PaidAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at, ORIGINAL_LOGIN()
         FROM inserted i
         WHERE ISNULL(i.ContributionID, 0) = 0
           AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ContributionID = i.ContributionID);
@@ -182,14 +201,26 @@ BEGIN
         DECLARE @ident NUMERIC(38, 0);
         SELECT TOP (0) @ident = 0 FROM dbo.BPJSMonthlyContribution WITH (TABLOCKX, HOLDLOCK);
         SET @ident = IDENT_CURRENT('dbo.BPJSMonthlyContribution');
-        SET IDENTITY_INSERT dbo.BPJSMonthlyContribution ON;
-        INSERT INTO dbo.BPJSMonthlyContribution
-            (ContributionID, MembershipID, PeriodMonth, PeriodYear, BaseWage, JHTEmployee, JHTEmployer, JKKEmployer, JKMEmployer, JPEmployee, JPEmployer, PaymentStatus, PaidAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at)
-        SELECT i.ContributionID, i.MembershipID, i.PeriodMonth, i.PeriodYear, i.BaseWage, i.JHTEmployee, i.JHTEmployer, i.JKKEmployer, i.JKMEmployer, i.JPEmployee, i.JPEmployer, i.PaymentStatus, i.PaidAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at
-        FROM inserted i
-        WHERE ISNULL(i.ContributionID, 0) <> 0
-          AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ContributionID = i.ContributionID);
-        SET IDENTITY_INSERT dbo.BPJSMonthlyContribution OFF;
+        BEGIN TRY
+            SET IDENTITY_INSERT dbo.BPJSMonthlyContribution ON;
+            INSERT INTO dbo.BPJSMonthlyContribution
+                (ContributionID, MembershipID, PeriodMonth, PeriodYear, BaseWage, JHTEmployee, JHTEmployer, JKKEmployer, JKMEmployer, JPEmployee, JPEmployer, PaymentStatus, PaidAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at, db_login)
+            SELECT i.ContributionID, i.MembershipID, i.PeriodMonth, i.PeriodYear, i.BaseWage, i.JHTEmployee, i.JHTEmployer, i.JKKEmployer, i.JKMEmployer, i.JPEmployee, i.JPEmployer, i.PaymentStatus, i.PaidAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at, ORIGINAL_LOGIN()
+            FROM inserted i
+            WHERE ISNULL(i.ContributionID, 0) <> 0
+              AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ContributionID = i.ContributionID);
+            SET IDENTITY_INSERT dbo.BPJSMonthlyContribution OFF;
+        END TRY
+        BEGIN CATCH
+            -- The failed insert (e.g. a foreign key error) has already moved
+            -- IDENTITY, and a rollback doesn't move it back. The error dooms the
+            -- transaction, so roll back first, then reseed (that commits on its
+            -- own), then re-raise so the writer still sees the original error.
+            IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+            IF IDENT_CURRENT('dbo.BPJSMonthlyContribution') <> @ident
+                DBCC CHECKIDENT ('dbo.BPJSMonthlyContribution', RESEED, @ident) WITH NO_INFOMSGS;
+            THROW;
+        END CATCH;
         IF IDENT_CURRENT('dbo.BPJSMonthlyContribution') <> @ident
             DBCC CHECKIDENT ('dbo.BPJSMonthlyContribution', RESEED, @ident) WITH NO_INFOMSGS;
     END;
@@ -227,7 +258,8 @@ BEGIN
         updated_by         = i.updated_by,
         updated_at         = i.updated_at,
         deleted_by         = i.deleted_by,
-        deleted_at         = i.deleted_at
+        deleted_at         = i.deleted_at,
+        db_login           = ORIGINAL_LOGIN()
     FROM dbo.BPJSMonthlyContribution t
     JOIN inserted i ON i.ContributionID = t.ContributionID
     JOIN @win     w ON w.id = t.ContributionID AND w.uniq_changed = 0;
@@ -258,7 +290,8 @@ BEGIN
             updated_by         = i.updated_by,
             updated_at         = i.updated_at,
             deleted_by         = i.deleted_by,
-            deleted_at         = i.deleted_at
+            deleted_at         = i.deleted_at,
+            db_login           = ORIGINAL_LOGIN()
         FROM dbo.BPJSMonthlyContribution t
         JOIN inserted i ON i.ContributionID = t.ContributionID
         WHERE t.ContributionID = @id;
@@ -286,8 +319,8 @@ BEGIN
                WHERE ISNULL(i.ClaimID, 0) = 0
                  AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ClaimID = i.ClaimID))
         INSERT INTO dbo.BPJSClaim
-            (MembershipID, ClaimNumber, ProgramType, ClaimDate, ReasonDescription, DisbursedAmount, ClaimStatus, ApprovedAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at)
-        SELECT i.MembershipID, i.ClaimNumber, i.ProgramType, i.ClaimDate, i.ReasonDescription, i.DisbursedAmount, i.ClaimStatus, i.ApprovedAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at
+            (MembershipID, ClaimNumber, ProgramType, ClaimDate, ReasonDescription, DisbursedAmount, ClaimStatus, ApprovedAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at, db_login)
+        SELECT i.MembershipID, i.ClaimNumber, i.ProgramType, i.ClaimDate, i.ReasonDescription, i.DisbursedAmount, i.ClaimStatus, i.ApprovedAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at, ORIGINAL_LOGIN()
         FROM inserted i
         WHERE ISNULL(i.ClaimID, 0) = 0
           AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ClaimID = i.ClaimID);
@@ -303,14 +336,26 @@ BEGIN
         DECLARE @ident NUMERIC(38, 0);
         SELECT TOP (0) @ident = 0 FROM dbo.BPJSClaim WITH (TABLOCKX, HOLDLOCK);
         SET @ident = IDENT_CURRENT('dbo.BPJSClaim');
-        SET IDENTITY_INSERT dbo.BPJSClaim ON;
-        INSERT INTO dbo.BPJSClaim
-            (ClaimID, MembershipID, ClaimNumber, ProgramType, ClaimDate, ReasonDescription, DisbursedAmount, ClaimStatus, ApprovedAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at)
-        SELECT i.ClaimID, i.MembershipID, i.ClaimNumber, i.ProgramType, i.ClaimDate, i.ReasonDescription, i.DisbursedAmount, i.ClaimStatus, i.ApprovedAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at
-        FROM inserted i
-        WHERE ISNULL(i.ClaimID, 0) <> 0
-          AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ClaimID = i.ClaimID);
-        SET IDENTITY_INSERT dbo.BPJSClaim OFF;
+        BEGIN TRY
+            SET IDENTITY_INSERT dbo.BPJSClaim ON;
+            INSERT INTO dbo.BPJSClaim
+                (ClaimID, MembershipID, ClaimNumber, ProgramType, ClaimDate, ReasonDescription, DisbursedAmount, ClaimStatus, ApprovedAt, CreatedAt, created_by, updated_by, updated_at, deleted_by, deleted_at, db_login)
+            SELECT i.ClaimID, i.MembershipID, i.ClaimNumber, i.ProgramType, i.ClaimDate, i.ReasonDescription, i.DisbursedAmount, i.ClaimStatus, i.ApprovedAt, i.CreatedAt, i.created_by, i.updated_by, i.updated_at, i.deleted_by, i.deleted_at, ORIGINAL_LOGIN()
+            FROM inserted i
+            WHERE ISNULL(i.ClaimID, 0) <> 0
+              AND NOT EXISTS (SELECT 1 FROM deleted d WHERE d.ClaimID = i.ClaimID);
+            SET IDENTITY_INSERT dbo.BPJSClaim OFF;
+        END TRY
+        BEGIN CATCH
+            -- The failed insert (e.g. a foreign key error) has already moved
+            -- IDENTITY, and a rollback doesn't move it back. The error dooms the
+            -- transaction, so roll back first, then reseed (that commits on its
+            -- own), then re-raise so the writer still sees the original error.
+            IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+            IF IDENT_CURRENT('dbo.BPJSClaim') <> @ident
+                DBCC CHECKIDENT ('dbo.BPJSClaim', RESEED, @ident) WITH NO_INFOMSGS;
+            THROW;
+        END CATCH;
         IF IDENT_CURRENT('dbo.BPJSClaim') <> @ident
             DBCC CHECKIDENT ('dbo.BPJSClaim', RESEED, @ident) WITH NO_INFOMSGS;
     END;
@@ -344,7 +389,8 @@ BEGIN
         updated_by         = i.updated_by,
         updated_at         = i.updated_at,
         deleted_by         = i.deleted_by,
-        deleted_at         = i.deleted_at
+        deleted_at         = i.deleted_at,
+        db_login           = ORIGINAL_LOGIN()
     FROM dbo.BPJSClaim t
     JOIN inserted i ON i.ClaimID = t.ClaimID
     JOIN @win     w ON w.id = t.ClaimID AND w.uniq_changed = 0;
@@ -371,7 +417,8 @@ BEGIN
             updated_by         = i.updated_by,
             updated_at         = i.updated_at,
             deleted_by         = i.deleted_by,
-            deleted_at         = i.deleted_at
+            deleted_at         = i.deleted_at,
+            db_login           = ORIGINAL_LOGIN()
         FROM dbo.BPJSClaim t
         JOIN inserted i ON i.ClaimID = t.ClaimID
         WHERE t.ClaimID = @id;

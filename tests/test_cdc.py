@@ -59,9 +59,13 @@ CONNECTORS = ["bpjsk-mssql-source", "bpjsk-postgres-source", "bpjsk-postgres-sin
 KSQL_OUTPUTS = ["PG_CLAIM_TO_MSSQL", "PG_MEMBERSHIP_TO_MSSQL", "PG_CONTRIBUTION_TO_MSSQL",
                 "MSSQL_CLAIM_TO_PG", "MSSQL_MEMBERSHIP_TO_PG", "MSSQL_CONTRIBUTION_TO_PG"]
 
-# Origin split the ksqlDB loop filter relies on: SQL Server users < 1000000,
-# PostgreSQL users >= 1000000.
+# Audit user IDs. The loop filter no longer looks at them (it uses db_login); they
+# only break LWW ties, so the higher one (PostgreSQL's here) wins a tie.
 MS_USER, PG_USER_ID = 101, 1000101
+# Logins the sinks write with (same defaults as docker-compose.yaml). The triggers
+# stamp the connecting login into db_login and the ksqlDB filter drops these.
+MSSQL_SINK_USER = os.getenv("MSSQL_SINK_USER", "cdc_sink")
+PG_SINK_USER = os.getenv("PG_SINK_USER", "cdc_sink")
 PG_ID_MIN = 1000000000  # SQL Server keys stay below this; PostgreSQL sequences start here
 
 TIMEOUT = 30  # seconds to wait for replication
@@ -178,11 +182,11 @@ LOOKUP = {"membership": ["nik"], "contribution": ["membership_id", "period_month
           "claim": ["claim_number"]}
 
 
-def row_insert(side, t, value, parent=None, ts=None, data=None):
+def row_insert(side, t, value, parent=None, ts=None, data=None, by=None):
     """Insert as an application would (key from IDENTITY/sequence) and return the key."""
     spec = TABLES[t]
     ts = ts or utc_now() - dt.timedelta(seconds=60)
-    data = {**(data or row_data(t, value, parent)), "created_at": db_ts(side, ts), "created_by": user(side)}
+    data = {**(data or row_data(t, value, parent)), "created_at": db_ts(side, ts), "created_by": by or user(side)}
     cols = [col(side, c) for c in data]
     vals = list(data.values())
     if side == "ms":
@@ -484,6 +488,68 @@ def tc14():
             assert got == nik, f"{side} NIK change: {s} has {got}, expected {nik}"
 
 
+def tc15():
+    # The loop filter goes by the login that wrote the row, not by the audit user
+    # IDs: a row whose created_by/updated_by is in the other node's range still
+    # replicates, db_login is the test's own login on the origin and the sink login
+    # on the replica (a value the writer sends is overwritten), and nothing echoes back.
+    t = TABLES["membership"]
+    me = {"ms": ms.cursor().execute("SELECT ORIGINAL_LOGIN()").fetchone()[0], "pg": PG_USER}
+    sink = {"ms": MSSQL_SINK_USER, "pg": PG_SINK_USER}
+    for side in ("ms", "pg"):
+        wrong = user(other(side))
+        data = {**row_data("membership", "LOGIN"), "db_login": "spoofed"}
+        rid = row_insert(side, "membership", "LOGIN", data=data, by=wrong)
+        replicated(side, "membership", rid)
+        row_update(side, "membership", rid, "LOGIN2", by=wrong)
+        stays("membership", rid, "LOGIN2", wrong, f"{side} row with {other(side)} user IDs replicates")
+        got = {s: row_fetch(s, "membership", rid, "db_login")[0] for s in ("ms", "pg")}
+        want = {side: me[side], other(side): sink[other(side)]}
+        assert {k: (v or "").lower() for k, v in got.items()} == {k: v.lower() for k, v in want.items()}, \
+            f"{side}: db_login {got}, expected {want}"
+        nik = row_fetch(side, "membership", rid, "nik")[0]
+        dst = t["topic_pg"] if side == "ms" else t["topic_ms"]
+        back = dst + (".to-mssql" if side == "ms" else ".to-pg")
+        n = count_events(back, nik)
+        assert n == 0, f"{side}: {n} echo event(s) in {back}"
+
+
+
+def tc16():
+    # A replicated insert (explicit key, as the sink sends it) that fails, here on
+    # the foreign key, must leave SQL Server's IDENTITY where it was: the failed
+    # insert moves it into the PostgreSQL range and a rollback doesn't undo that,
+    # so the trigger reseeds it before re-raising the error.
+    cur = pymssql.connect(server=MSSQL_HOST, port=MSSQL_PORT, user="sa", password=MSSQL_PASSWORD,
+                          database=MSSQL_DB, login_timeout=15)
+    try:
+        c = cur.cursor()
+        c.execute("SELECT IDENT_CURRENT('dbo.BPJSClaim')")
+        before = c.fetchone()[0]
+        try:
+            c.execute("SET IDENTITY_INSERT dbo.BPJSClaim ON; "
+                      "INSERT INTO dbo.BPJSClaim (ClaimID, MembershipID, ClaimNumber, ProgramType, ClaimDate, "
+                      "ReasonDescription, ClaimStatus, CreatedAt, created_by) "
+                      "VALUES (%s, -1, %s, 'JHT', '2025-06-01', 'CDC test', 'NEW', SYSUTCDATETIME(), %s)",
+                      (PG_ID_MIN + 999999, f"CDCT-{uuid.uuid4().hex[:20]}", PG_USER_ID))
+            cur.commit()
+            c.execute("DELETE FROM dbo.BPJSClaim WHERE ClaimID = %s", (PG_ID_MIN + 999999,))
+            cur.commit()
+            raise Skip("foreign keys are disabled, so the insert can't be made to fail")
+        except pymssql.Error as e:
+            assert "FOREIGN KEY" in str(e), f"unexpected error: {e}"
+        try:
+            cur.rollback()
+        except pymssql.Error:
+            pass
+        c = cur.cursor()
+        c.execute("SELECT IDENT_CURRENT('dbo.BPJSClaim')")
+        after = c.fetchone()[0]
+        assert after == before, f"IDENTITY moved from {before} to {after} after a failed replicated insert"
+    finally:
+        cur.close()
+
+
 # ---------- cleanup ----------
 def cleanup():
     """Delete the test rows on both nodes (children first)."""
@@ -519,6 +585,8 @@ TESTS = [
     ("TC-12 DLQ routing", tc12),
     ("TC-13 ksqlDB queries + connectors", tc13),
     ("TC-14 NIK (unique) change", tc14),
+    ("TC-15 Loop filter by db_login", tc15),
+    ("TC-16 Failed insert keeps IDENTITY", tc16),
 ]
 
 if __name__ == "__main__":

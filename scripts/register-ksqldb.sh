@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # Applies the ksqlDB loop filter (sql/ksqldb-01-loop-filter.sql).
 # Run after the source connectors and before the sinks (register-connectors.sh does this).
+#   --replace  upgrade the running filter queries in place (CREATE OR REPLACE):
+#              same query, same consumer offsets, so nothing is re-read. Use it
+#              after changing a WHERE clause; ksqlDB rejects incompatible changes.
 set -e
+[ -f .env ] && { set -a; source .env; set +a; }
+REPLACE=false
+[ "${1:-}" = "--replace" ] && REPLACE=true
+# Logins the JDBC sinks write with (same defaults as docker-compose.yaml). The
+# filter drops the changes these logins make; see the SQL file.
+PG_SINK_USER=${PG_SINK_USER:-cdc_sink}
+MSSQL_SINK_USER=${MSSQL_SINK_USER:-cdc_sink}
 KSQL=${KSQLDB_URL:-http://localhost:8088}
 SQL_FILE=${SQL_FILE:-sql/ksqldb-01-loop-filter.sql}
 # Partitions for a source topic that doesn't exist yet. Debezium only creates a
@@ -15,7 +25,9 @@ CURL_AUTH=()
 # POST statements to ksqlDB; fail on any statement error.
 ksql() {
   local out
-  out=$(jq -n --arg s "$1" '{ksql: $s, streamsProperties: {"auto.offset.reset": "earliest"}}' \
+  out=$(jq -n --arg s "$1" --arg pg "$PG_SINK_USER" --arg ms "$MSSQL_SINK_USER" \
+      '{ksql: $s, streamsProperties: {"auto.offset.reset": "earliest"},
+        sessionVariables: {PG_SINK_USER: $pg, MSSQL_SINK_USER: $ms}}' \
     | curl -s "${CURL_AUTH[@]}" -X POST -H "Content-Type: application/vnd.ksql.v1+json" --data @- "$KSQL/ksql")
   if echo "$out" | jq -e 'type == "object" or any(.[]; ."@type" == "statement_error")' >/dev/null; then
     echo "$out" | jq . >&2
@@ -41,5 +53,11 @@ for t in $(grep -o "KAFKA_TOPIC='[^']*'" "$SQL_FILE" | grep -v "\.to-" | sed "s/
   fi
 done
 
-echo "Applying $SQL_FILE"
-ksql "$(cat "$SQL_FILE")" | jq -r '.[] | "  " + (.commandStatus.message // ."@type")'
+STATEMENTS=$(cat "$SQL_FILE")
+if $REPLACE; then
+  # Only the output (filter) streams; the raw source streams stay IF NOT EXISTS.
+  STATEMENTS=$(sed -E 's/CREATE STREAM IF NOT EXISTS ([A-Za-z0-9_]+_to_(pg|mssql))([^A-Za-z0-9_]|$)/CREATE OR REPLACE STREAM \1\3/' <<<"$STATEMENTS")
+fi
+
+echo "Applying $SQL_FILE (PG_SINK_USER=$PG_SINK_USER, MSSQL_SINK_USER=$MSSQL_SINK_USER)"
+ksql "$STATEMENTS" | jq -r '.[] | "  " + (.commandStatus.message // ."@type")'

@@ -11,7 +11,13 @@
 -- >= 1000000000 (postgres-02-replication.sql). The LWW trigger keeps IDENTITY
 -- below that range after the sink inserts PostgreSQL keys.
 -- Timestamps are UTC (SYSUTCDATETIME()), DATETIME2(6) to match PostgreSQL's
--- microseconds. Audit users: SQL Server < 1000000, PostgreSQL >= 1000000.
+-- microseconds. Audit users (updated_by / created_by) only break LWW ties.
+--
+-- db_login: the login that last wrote the row. The trigger in
+-- mssql-03-lww-trigger.sql sets it from ORIGINAL_LOGIN() on every insert and
+-- update (a value the writer sends is ignored), and the ksqlDB loop filter uses
+-- it to drop the rows the sink wrote. The sinks never replicate it. Adding it to
+-- a table that already has CDC needs a new capture instance (mssql-02-enable-cdc.sql).
 IF DB_ID('bpjsk_poc') IS NULL
     CREATE DATABASE [bpjsk_poc];
 GO
@@ -39,6 +45,7 @@ CREATE TABLE dbo.BPJSMembership (
     updated_at      DATETIME2(6)   NULL,
     deleted_by      INT            NULL,
     deleted_at      DATETIME2(6)   NULL,
+    db_login        NVARCHAR(128)  NULL,
     CONSTRAINT PK_BPJSMembership PRIMARY KEY (MembershipID),
     CONSTRAINT UQ_BPJSMembership_BPJSNumber UNIQUE (BPJSNumber),
     CONSTRAINT UQ_BPJSMembership_NIK UNIQUE (NIK)
@@ -69,6 +76,7 @@ CREATE TABLE dbo.BPJSMonthlyContribution (
     updated_at      DATETIME2(6)   NULL,
     deleted_by      INT            NULL,
     deleted_at      DATETIME2(6)   NULL,
+    db_login        NVARCHAR(128)  NULL,
     CONSTRAINT PK_BPJSMonthlyContribution PRIMARY KEY (ContributionID),
     CONSTRAINT UQ_BPJSMonthlyContribution_Period UNIQUE (MembershipID, PeriodYear, PeriodMonth),
     CONSTRAINT CK_BPJSMonthlyContribution_PeriodMonth CHECK (PeriodMonth BETWEEN 1 AND 12),
@@ -94,6 +102,7 @@ CREATE TABLE dbo.BPJSClaim (
     updated_at        DATETIME2(6)   NULL,
     deleted_by        INT            NULL,
     deleted_at        DATETIME2(6)   NULL,
+    db_login          NVARCHAR(128)  NULL,
     CONSTRAINT PK_BPJSClaim PRIMARY KEY (ClaimID),
     CONSTRAINT UQ_BPJSClaim_ClaimNumber UNIQUE (ClaimNumber),
     CONSTRAINT FK_BPJSClaim_Membership FOREIGN KEY (MembershipID)
@@ -106,3 +115,12 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_BPJSClaim_MembershipID
     CREATE INDEX IX_BPJSClaim_MembershipID ON dbo.BPJSClaim (MembershipID);
 GO
 -- (BPJSMonthlyContribution.MembershipID is covered by UQ_BPJSMonthlyContribution_Period.)
+
+-- Tables created before db_login existed.
+IF COL_LENGTH('dbo.BPJSMembership', 'db_login') IS NULL
+    ALTER TABLE dbo.BPJSMembership ADD db_login NVARCHAR(128) NULL;
+IF COL_LENGTH('dbo.BPJSMonthlyContribution', 'db_login') IS NULL
+    ALTER TABLE dbo.BPJSMonthlyContribution ADD db_login NVARCHAR(128) NULL;
+IF COL_LENGTH('dbo.BPJSClaim', 'db_login') IS NULL
+    ALTER TABLE dbo.BPJSClaim ADD db_login NVARCHAR(128) NULL;
+GO
